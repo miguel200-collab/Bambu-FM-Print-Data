@@ -1,56 +1,106 @@
-# Bambu MakerLAB Print Failure Data Engine
+# Bambu Farm Manager — Print Failure Data Engine
 
-Monitors a fleet of up to 4 Bambu Lab printers via MQTT, logs every print job to a local SQLite database, and prompts lab staff to label each completed job as succeeded or failed — building a dataset for future print-failure prediction.
+Monitors a fleet of Bambu Lab printers over MQTT, logs every print job to a
+local SQLite database, and prompts you to label each completed job as
+**succeeded** or **failed**. Over time this builds a labeled dataset that can be
+used to train a print-failure prediction model.
 
----
-
-## How It Works
-
-1. `main.py` reads `config.json` and starts one `PrinterMonitor` per printer in a background thread.
-2. Each monitor connects to the printer over MQTT/TLS (port 8883) and watches for state transitions.
-3. When a print starts (`RUNNING`), a new row is inserted in `print_dataset.db`.
-4. When a print ends (`FINISH` or `FAILED`), a popup appears asking: **"Did this print fail?"**
-5. Staff clicks YES or NO — the label is written to the database alongside job metadata.
+It works with any number of printers (the template ships with 4) and on any
+desktop OS that runs Python — Windows, macOS, or Linux. The only thing you need
+is the printer's IP address, serial number, and LAN access code.
 
 ---
 
-## File Structure
+## Why this exists
+
+This project was built for a **MakerLAB** — a shared makerspace where several
+Bambu Lab printers run unattended for long stretches. In that environment a few
+problems show up fast:
+
+- Prints fail silently while no one is watching, and nobody notices until a
+  cold, tangled blob of filament is found hours later.
+- There's no structured record of *which* prints failed, *on which printer*,
+  with *which material* and settings — so it's impossible to spot patterns.
+- Without labeled success/failure data, there's no way to ever predict failures
+  before they happen.
+
+This tool fixes that by passively watching every printer on the LAN and turning
+each completed print into a quick yes/no question for the person nearby. The
+result is a clean, growing dataset (printer, material, temperatures, file, and a
+human label) that's ready for analysis or ML down the road.
+
+---
+
+## How it works
+
+1. `main.py` reads `config.json` and starts one `PrinterMonitor` per printer in a
+   background thread.
+2. Each monitor connects to its printer over MQTT/TLS (port 8883) and watches
+   for state transitions.
+3. When a print starts (`RUNNING`), a new row is inserted into `print_dataset.db`.
+4. When a print ends (`FINISH` or `FAILED`), a popup appears asking
+   **"Did this print fail?"**
+5. You click YES or NO — the label is written to the database alongside the job
+   metadata.
+
+---
+
+## File structure
 
 ```
-Bambu Farm Manager Script/
-├── config.json           # Fleet config — edit this on Windows only
-├── config.json.template  # Safe template (no real credentials) — copy and rename on Windows
-├── main.py               # Entry point: loads config, starts monitors, runs Tkinter loop
+Bambu-FM-Print-Data/
+├── main.py               # Entry point: loads config, starts monitors, runs the Tkinter loop
 ├── mqtt_listener.py      # PrinterMonitor class — MQTT connection + state machine
 ├── database.py           # SQLite helpers: init_db, create_job, update_job_end, write_label
 ├── labeler_gui.py        # Tkinter LabelPopup window
+├── config.json.template  # Safe template (no real credentials) — copy and fill in
 ├── requirements.txt      # paho-mqtt>=2.0
-├── setup.bat             # Windows: pip install -r requirements.txt
-├── install_autostart.bat # Windows: registers Task Scheduler job at login
-├── launcher.bat          # Windows: pythonw main.py (no console window)
-├── print_dataset.db      # SQLite database — lives only on Windows
-└── makerlab.log          # Rotating log — lives only on Windows
+├── setup.bat             # Windows: pip install -r requirements.txt  (optional)
+├── install_autostart.bat # Windows: registers a Task Scheduler job at login  (optional)
+├── launcher.bat          # Windows: runs main.py with no console window  (optional)
+└── README.md
 ```
+
+> `config.json`, `print_dataset.db`, and `makerlab.log` are created at runtime
+> next to the scripts and are **not** checked into the repo (see `.gitignore`).
 
 ---
 
-## Windows Setup (first time)
+## Setup
 
-### 1. Install Python 3.11
+### 1. Install Python 3.11+
+
+Any modern Python 3 will work. On Windows:
 
 ```
 winget install Python.Python.3.11
 ```
 
-Or download from [python.org](https://www.python.org/downloads/) and check **"Add Python to PATH"**.
+Or download from [python.org](https://www.python.org/downloads/) and check
+**"Add Python to PATH"**.
 
-### 2. Copy files from USB
+### 2. Get the code
 
-Copy everything **except** `print_dataset.db` and `makerlab.log` to `C:\MakerLAB\`.
+```bash
+git clone https://github.com/miguel200-collab/Bambu-FM-Print-Data.git
+cd Bambu-FM-Print-Data
+```
 
-### 3. Create `config.json`
+### 3. Install dependencies
 
-Copy `config.json.template` to `config.json` and fill in real values:
+```bash
+pip install -r requirements.txt
+```
+
+(On Windows you can just double-click `setup.bat` instead.)
+
+### 4. Create `config.json`
+
+Copy the template and fill in each printer's details:
+
+```bash
+cp config.json.template config.json
+```
 
 ```json
 {
@@ -65,46 +115,66 @@ Copy `config.json.template` to `config.json` and fill in real values:
 }
 ```
 
-> **Never copy `config.json` back to your Mac** — it contains printer credentials.
+You'll find the **serial number** and **LAN access code** in the Bambu printer's
+on-device settings (Network / LAN section). The printer and this machine must be
+on the same network, with LAN access enabled on the printer.
 
-### 4. Install dependencies
+> `config.json` contains your printers' credentials — keep it private and never
+> commit it. It's already in `.gitignore`.
 
-Double-click `setup.bat` (or run in a terminal):
+### 5. Run it
 
-```bat
-setup.bat
+```bash
+python main.py
 ```
 
-### 5. Register auto-start
+A background process starts and watches for print events. When a print finishes,
+a popup asks whether it failed. Check `makerlab.log` for connection status.
 
-Double-click `install_autostart.bat` once. This registers the daemon with Windows Task Scheduler so it starts automatically at login.
+### Try it without any printers (offline test)
 
-### 6. Run manually (optional first test)
-
-```bat
-launcher.bat
+```bash
+python main.py --mock
 ```
 
-A system-tray-style process starts silently. Check `makerlab.log` for connection status.
+This skips all MQTT connections and injects a fake `FINISH` event after 3
+seconds, so you can test the full database → popup → label flow without a
+printer on the network.
 
 ---
 
-## Update Cycle (after USB copy)
+## Optional: auto-start on Windows
 
-1. Copy new `.py` files from USB to `C:\MakerLAB\` (do **not** overwrite `config.json`, `print_dataset.db`, or `makerlab.log`).
-2. Restart the daemon:
+If you want the daemon to launch automatically whenever someone logs into a
+Windows machine in the lab:
 
-```bat
-schtasks /run /tn "MakerLAB Daemon"
-```
+1. Double-click **`install_autostart.bat`** once. This registers a Task
+   Scheduler job ("MakerLAB Daemon") that runs `launcher.bat` at login.
+2. To start it immediately without logging out:
+   ```
+   schtasks /run /tn "MakerLAB Daemon"
+   ```
+3. Useful commands:
+   - Stop: `schtasks /end /tn "MakerLAB Daemon"`
+   - Remove: `schtasks /delete /tn "MakerLAB Daemon" /f`
 
-Or reboot the laptop.
+On macOS/Linux, use your preferred process manager (`launchd`, `systemd --user`,
+a cron `@reboot` entry, or just a terminal session).
 
 ---
 
-## Exporting the Database
+## Updating after a pull
 
-Copy `C:\MakerLAB\print_dataset.db` to your Mac for analysis. The file is a standard SQLite3 database — open it with [DB Browser for SQLite](https://sqlitebrowser.org/) or query it with Python:
+After pulling new code, just restart the daemon — there's nothing else to do.
+Don't delete `config.json`, `print_dataset.db`, or `makerlab.log`; those hold
+your local fleet config and collected data.
+
+---
+
+## Exporting the database
+
+`print_dataset.db` is a standard SQLite3 database. Open it with
+[DB Browser for SQLite](https://sqlitebrowser.org/) or query it with Python:
 
 ```python
 import sqlite3, pandas as pd
@@ -115,7 +185,7 @@ print(df)
 
 ---
 
-## Database Schema
+## Database schema
 
 | Column          | Type    | Description                                      |
 |-----------------|---------|--------------------------------------------------|
@@ -138,10 +208,14 @@ print(df)
 
 ---
 
-## Development Notes
+## Notes
 
-- All `.py` files flow **one-way**: Mac → USB → Windows. Never edit them on Windows.
-- `config.json` is **Windows-only**. Keep real credentials off your Mac.
-- `print_dataset.db` and `makerlab.log` stay on Windows; copy them to Mac periodically for analysis.
-- If a printer goes offline mid-print, the MQTT monitor reconnects with exponential backoff (up to 60 s).
-- If two printers finish within the same 250 ms poll window, labeling popups appear one at a time — each popup identifies which printer it belongs to.
+- If a printer goes offline mid-print, the MQTT monitor reconnects with
+  exponential backoff (up to 60 s).
+- If several printers finish within the same 250 ms poll window, labeling
+  popups appear one at a time — each popup identifies which printer it belongs
+  to.
+- If the daemon is closed while a popup was open, those completed-but-unlabeled
+  jobs are re-prompted the next time it starts.
+- `layer_height`, `infill_density`, and `wall_loops` are reserved for future
+  slicer (`.3mf`) metadata extraction.

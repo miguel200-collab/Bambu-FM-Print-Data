@@ -1,11 +1,11 @@
 """
-main.py — Entry point for the MakerLAB Print Failure Data Engine.
+main.py — Entry point for the Bambu Farm Manager Print Failure Data Engine.
 
-Normal mode (Windows, on lab network):
+Normal mode (connects to real printers on the LAN):
     python main.py
-    pythonw main.py        # same but no console window
+    pythonw main.py        # same, but with no console window (Windows)
 
-Mock mode (Mac or offline testing):
+Mock mode (offline testing, no printers required):
     python main.py --mock
 
     Skips all MQTT connections and injects a fake FINISH event after 3 seconds
