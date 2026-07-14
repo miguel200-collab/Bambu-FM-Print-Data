@@ -219,3 +219,40 @@ print(df)
   jobs are re-prompted the next time it starts.
 - `layer_height`, `infill_density`, and `wall_loops` are reserved for future
   slicer (`.3mf`) metadata extraction.
+
+---
+
+## Roadmap — future workflow
+
+The dataset today captures *metadata* about each print (printer, material,
+temperatures, filename, outcome). The natural next step is to also keep the
+**actual source file** so a failure can be investigated against the real
+slicer settings, not just a row in a table.
+
+Planned workflow:
+
+1. **Fetch the file from the printer.** When a print ends, pull the
+   `.gcode.3mf` file referenced by `subtask_name` / `gcode_file` off the
+   printer (via the Bambu HTTP/file interface or MQTT) and hash it.
+2. **Extract slicer settings.** Unzip the `.3mf` (it's a zip archive) and read
+   the embedded `slice_info.config` / `metadata.json` to populate the reserved
+   columns — `layer_height`, `infill_density`, `wall_loops`, and more.
+3. **Archive to an external drive.** Copy the file to a mounted archive volume
+   under a stable layout, e.g.:
+   ```
+   /Volumes/PrintArchive/
+   └── 2026/
+       └── 07/
+           └── <job_id>__<printer_serial>__<subtask_name>.3mf
+           └── <job_id>.json   # the matching dataset row + extracted slicer settings
+           └── <job_id>.png    # the 3mf's thumbnail image (for quick visual review)
+           └── ...
+   ```
+4. **Link it back to the dataset.** Store the archive path (and file hash) in a
+   new `archive_path` / `file_sha256` column on `print_jobs`, so each labeled
+   row points at the physical file on the external drive for later reference.
+
+The result is a self-contained dataset: every row in `print_dataset.db` can be
+traced back to the exact `.3mf` file on the archive drive, making it suitable
+for reproducible analysis or model training. This is not implemented yet —
+`layer_height`, `infill_density`, and `wall_loops` are placeholders for it.
