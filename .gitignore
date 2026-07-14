@@ -1,0 +1,35 @@
+# --- Secrets / local config ---
+# config.json holds real printer credentials (IPs, serials, access codes).
+# Only the sanitized config.json.template is committed.
+config.json
+
+# --- Runtime data (Windows-only, never commit) ---
+print_dataset.db
+print_dataset.db-shm
+print_dataset.db-wal
+makerlab.log
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# --- Windows ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- IDE / Cursor local state ---
+.cursor/
+.vscode/
+.idea/
