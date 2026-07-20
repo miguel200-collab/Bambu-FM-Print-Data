@@ -4,25 +4,37 @@
       "name": "Printer 1 — Bambu X1C",
       "ip": "192.168.1.X",
       "serial": "YOUR_SERIAL_1",
-      "access_code": "YOUR_ACCESS_CODE_1"
+      "access_code": "YOUR_ACCESS_CODE_1",
+      "camera": true
     },
     {
       "name": "Printer 2 — Bambu X1C",
       "ip": "192.168.1.X",
       "serial": "YOUR_SERIAL_2",
-      "access_code": "YOUR_ACCESS_CODE_2"
+      "access_code": "YOUR_ACCESS_CODE_2",
+      "camera": true
     },
     {
       "name": "Printer 3 — Bambu X1C",
       "ip": "192.168.1.X",
       "serial": "YOUR_SERIAL_3",
-      "access_code": "YOUR_ACCESS_CODE_3"
+      "access_code": "YOUR_ACCESS_CODE_3",
+      "camera": true
     },
     {
       "name": "Printer 4 — Bambu X1C",
       "ip": "192.168.1.X",
       "serial": "YOUR_SERIAL_4",
-      "access_code": "YOUR_ACCESS_CODE_4"
+      "access_code": "YOUR_ACCESS_CODE_4",
+      "camera": true
     }
-  ]
+  ],
+  "web": {
+    "blob_token": "vercel_blob_rw_REPLACE_ME",
+    "station_api_url": "https://makerlab-status.YOUR_TUNNEL.cfargotunnel.com",
+    "api_host": "0.0.0.0",
+    "api_port": 8080,
+    "poll_interval_s": 10,
+    "inbox_dir": "C:\\BambuSubmissions"
+  }
 }

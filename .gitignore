@@ -9,6 +9,11 @@ print_dataset.db-shm
 print_dataset.db-wal
 makerlab.log
 
+# --- Station file-watcher staging dirs (downloaded student submissions) ---
+incoming/
+processed/
+BambuSubmissions/
+
 # --- Python ---
 __pycache__/
 *.py[cod]

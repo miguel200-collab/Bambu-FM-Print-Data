@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "print_dataset.db"
 
-_CREATE_TABLE = """
+_CREATE_PRINT_JOBS = """
 CREATE TABLE IF NOT EXISTS print_jobs (
     job_id          TEXT PRIMARY KEY,
     printer_serial  TEXT NOT NULL,
@@ -35,6 +35,22 @@ CREATE TABLE IF NOT EXISTS print_jobs (
 );
 """
 
+_CREATE_UPLOADS = """
+CREATE TABLE IF NOT EXISTS uploads (
+    upload_id           TEXT PRIMARY KEY,
+    blob_key            TEXT NOT NULL,
+    student_name        TEXT,
+    original_filename   TEXT,
+    renamed_filename    TEXT,
+    target_printer      TEXT,
+    printer_serial      TEXT,
+    upload_status       TEXT NOT NULL,   -- 'pending' | 'uploading' | 'done' | 'failed'
+    error_message       TEXT,
+    received_at         TEXT,
+    uploaded_at         TEXT
+);
+"""
+
 
 def _connect() -> sqlite3.Connection:
     # timeout: how long sqlite waits on a locked DB before raising.
@@ -48,10 +64,11 @@ def _connect() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Create the database and table if they don't already exist, and apply
+    """Create the database and tables if they don't already exist, and apply
     lightweight column migrations for databases created by older versions."""
     with _connect() as conn:
-        conn.execute(_CREATE_TABLE)
+        conn.execute(_CREATE_PRINT_JOBS)
+        conn.execute(_CREATE_UPLOADS)
         _migrate(conn)
     log.info("Database initialised at %s", DB_PATH)
 
@@ -170,3 +187,64 @@ def get_unlabeled_completed_jobs() -> list[sqlite3.Row]:
     """
     with _connect() as conn:
         return conn.execute(sql).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# uploads table — student-submitted files pulled from Vercel Blob
+# ---------------------------------------------------------------------------
+
+def create_upload(
+    upload_id: str,
+    blob_key: str,
+    student_name: Optional[str],
+    original_filename: Optional[str],
+    renamed_filename: Optional[str],
+    target_printer: Optional[str],
+    received_at: str,
+    upload_status: str = "pending",
+) -> None:
+    """Insert a row for a file the station just pulled from Vercel Blob."""
+    sql = """
+        INSERT OR IGNORE INTO uploads
+            (upload_id, blob_key, student_name, original_filename,
+             renamed_filename, target_printer, upload_status, received_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    with _connect() as conn:
+        conn.execute(sql, (
+            upload_id, blob_key, student_name, original_filename,
+            renamed_filename, target_printer, upload_status, received_at,
+        ))
+    log.info("Upload recorded: %s  blob=%s  file=%s", upload_id, blob_key, renamed_filename)
+
+
+def mark_uploaded(
+    upload_id: str,
+    printer_serial: Optional[str],
+    uploaded_at: str,
+    status: str = "done",
+    error_message: Optional[str] = None,
+) -> None:
+    """Update an upload row after the printer upload succeeded or failed."""
+    sql = """
+        UPDATE uploads
+        SET printer_serial = ?, uploaded_at = ?, upload_status = ?, error_message = ?
+        WHERE upload_id = ?
+    """
+    with _connect() as conn:
+        conn.execute(sql, (printer_serial, uploaded_at, status, error_message, upload_id))
+    log.info("Upload %s marked %s on %s", upload_id, status, printer_serial or "n/a")
+
+
+def list_recent_uploads(limit: int = 50) -> list[sqlite3.Row]:
+    """Return the most recent upload rows (for a future station UI / log view)."""
+    sql = """
+        SELECT upload_id, student_name, original_filename, renamed_filename,
+               target_printer, printer_serial, upload_status, error_message,
+               received_at, uploaded_at
+        FROM uploads
+        ORDER BY received_at DESC
+        LIMIT ?
+    """
+    with _connect() as conn:
+        return conn.execute(sql, (limit,)).fetchall()

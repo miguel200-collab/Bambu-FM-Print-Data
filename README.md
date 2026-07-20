@@ -1,5 +1,160 @@
 # Bambu Farm Manager — Print Failure Data Engine
 
+> **NOTE FOR NEW AGENTS / CHATS:** Read the **"Project context (start here)"**
+> section just below before doing anything else. It explains the current state
+> of the project, the decided workflow, what is built, and the one small TODO
+> that remains. The rest of this README describes the original
+> monitoring/labeling tool and the student-submission web workflow in detail.
+
+---
+
+## Project context (start here)
+
+This repo is a **custom Python daemon** that monitors a fleet of Bambu Lab
+printers over MQTT and labels print outcomes for an ML dataset. It is **not**
+the official Bambu product called "Bambu Farm Manager" (BFM). Both run on the
+same dedicated Windows laptop; they are separate pieces of software.
+
+### What we are building (the goal)
+
+A low-friction way for students to submit 3D prints from home and pick them up
+in the lab:
+
+1. **Student (from home)** opens the public Vercel website, enters their name,
+   and uploads a sliced `.gcode.3mf` file.
+2. **The dedicated laptop** automatically pulls that file down from Vercel Blob
+   within ~10 seconds, renames it to `<name>_<filename>.gcode.3mf`, and drops it
+   into a clearly-named **inbox folder on the laptop**, organized by student name
+   (e.g. `C:\BambuSubmissions\<student name>\`).
+3. **Student (in the lab)** walks up to the dedicated laptop, opens **Bambu Farm
+   Manager**, clicks **Upload**, browses to their folder in the inbox
+   (`C:\BambuSubmissions\<student name>\`), and selects their file. BFM ingests
+   it into its **Files** tab. Then the student clicks **Create → Direct to
+   Print** and picks a matching idle printer.
+
+The "send to printer" step stays a deliberate, in-lab human action — students
+never print from home. The only manual step is clicking BFM's Upload button and
+selecting the file from the inbox folder, which is exactly the human "push my
+print" action the user wants to preserve.
+
+### Architecture (decided)
+
+```
+student (home) → Vercel (Next.js) site → /api/upload → Vercel Blob (incoming/)
+                                                       ↑ polled by station/file_watcher.py (~10s)
+station laptop → file_watcher renames to <name>_<file>.gcode.3mf → inbox folder (C:\BambuSubmissions\<name>\)
+student (in lab) → BFM Client → Upload → select file from inbox → Files tab → Create / Direct to Print → printer (LAN)
+```
+
+- **Status + camera** on the Vercel site are read from a small FastAPI server on
+  the laptop (`station/api_server.py`), exposed to the internet via a Cloudflare
+  Tunnel (see `station/TUNNEL.md`). The laptop fetches printer telemetry over
+  MQTT (existing `mqtt_listener.py`) and camera JPEGs over the LAN.
+- **File submission** is async and decoupled through Vercel Blob: the site
+  writes to Blob, the laptop polls Blob. No tunnel needed for the upload path.
+- **The "into BFM" step is manual** (human clicks Upload + selects the file).
+  This is the decided approach ("Pivot A") — it works today and needs no BFM
+  reverse-engineering. Fully automating that last click is an *optional* future
+  upgrade, not a blocker (see the bottom of this section).
+
+### What is already built and working
+
+- `mqtt_listener.py` — added `snapshot()` + `camera_url()` + thread lock.
+- `database.py` — added `uploads` table + helpers.
+- `station/api_server.py` — FastAPI: `/api/printers`, `/api/printer/<serial>/camera`, `/api/health`.
+- `station/camera.py` — fetches a JPEG snapshot from a printer over the LAN.
+- `station/file_watcher.py` — polls Vercel Blob `incoming/`, downloads, renames to
+  `<name>_<filename>.gcode.3mf`, records in the `uploads` table, and archives
+  the renamed file into the organized inbox folder
+  (`C:\BambuSubmissions\<sanitized name>\<name>_<filename>.gcode.3mf` by
+  default; configurable via `web.inbox_dir` in `config.json`).
+- `main.py` — starts the API server + file watcher in daemon threads (optional,
+  only when the `web` config section is present).
+- `config.json.template`, `requirements.txt`, `.gitignore` — extended.
+- `web/` — a Cornell Tech-themed Next.js app (status grid, camera, upload form,
+  `/api/upload` route, Vercel Blob integration).
+- `station/inspect_bfm.py` — read-only inspection tool used to investigate BFM
+  internals (kept for reference; see "Optional future upgrade" below).
+
+### The ONE remaining TODO (done)
+
+Make `station/file_watcher.py` archive finished submissions into an organized,
+easy-to-find inbox folder instead of the current flat `processed/` dir. Suggested
+layout:
+
+```
+C:\BambuSubmissions\
+└── <sanitized student name>\
+    └── <name>_<filename>.gcode.3mf
+```
+
+Implementation notes for whoever picks this up:
+
+- In `file_watcher.py`, the `__init__` currently sets `self._processed =
+  base_dir / "processed"`. Change the archive root to a configurable inbox path
+  (add `inbox_dir` to the `web` section of `config.json.template`, default
+  `C:\BambuSubmissions`), and create a per-student subfolder
+  (`inbox_dir / sanitize(name)`) before moving the renamed file there.
+- Keep the `uploads` table recording exactly as-is (it already logs
+  `renamed_filename`, `student_name`, etc.) — the inbox folder is just the
+  human-facing view of the same data.
+- Create the inbox folder once on the laptop (admin may be needed for
+  `C:\BambuSubmissions`; alternatively put it under the user's Desktop to
+  avoid permission issues).
+- Update this README's "Student (in the lab)" step and `web/README.md` to name
+  the actual inbox path once chosen.
+
+**Status: implemented.** `FileWatcher.__init__` now takes an `inbox_dir`
+(defaulting to `base_dir / "BambuSubmissions"`), `config.json.template`
+declares `web.inbox_dir` as `C:\BambuSubmissions`, `main.py` passes it through,
+and `_process_blob` archives to `inbox_dir / sanitize(name) / renamed`. The
+README "Student (in the lab)" step and `web/README.md` already name the path.
+
+### What is deprecated / unused
+
+- `station/printer_uploader.py` — uploads to a **printer's local HTTP API**,
+  bypassing BFM. **Not used in the decided workflow.** Keep the file for
+  reference but do NOT call it from `file_watcher.py`. (The human performs the
+  upload via BFM's Upload button instead.)
+- The web upload form's "target printer" dropdown (`web/components/UploadForm.tsx`,
+  `web/lib/blob.ts`) is no longer a routing key — the human picks the printer in
+  BFM. It can stay as optional metadata or be removed; it does not affect the
+  laptop side.
+
+### Optional future upgrade (NOT required to ship)
+
+Fully automating the last "click Upload in BFM" step. Two viable routes; pick
+based on a 2-minute check the user still needs to do:
+
+1. **Sign into <https://bambulab.com> with the Bambu account used to activate
+   BFM** and look at "My Files." If the files uploaded through BFM appear there
+   too, then uploads go to the Bambu cloud account, and the laptop script can
+   upload via the community Bambu cloud API (no BFM internals needed). The file
+   would then appear in BFM's Files tab automatically.
+2. If the files are NOT in the cloud, use **UI automation** (`pywinauto`) to
+   drive BFM's Upload button + file dialog. No API or request-signing needed,
+   but brittle to BFM UI changes.
+
+Background on why this is optional: BFM's local server has no documented
+upload API, and its `debug.log` shows no upload requests (the Client↔Server
+REST calls logged are only `/license`, `/captain`, `/devices2`, `/tags`,
+`/task`, `/users/current_user` — all polling/management, none file upload). The
+`app.asar` strings show an `uploadToServer` path with
+`application/vnd.adobe.partial-upload` and Bambu `x-bbl-sec-*` signing headers,
+which means a direct API replication would require reproducing Bambu's request
+signing — that's the hard route and is not worth it while the manual Upload
+click is acceptable. `station/inspect_bfm.py` was written to investigate this
+and can be re-run if we ever pursue the automated route.
+
+### Quick links
+
+- Official BFM docs: <https://wiki.bambulab.com/en/software/bambu-farm-manager>
+- Tunnel setup: [`station/TUNNEL.md`](station/TUNNEL.md)
+- Inspection script (reference): [`station/inspect_bfm.py`](station/inspect_bfm.py)
+- Web app: [`web/README.md`](web/README.md)
+
+---
+
 Monitors a fleet of Bambu Lab printers over MQTT, logs every print job to a
 local SQLite database, and prompts you to label each completed job as
 **succeeded** or **failed**. Over time this builds a labeled dataset that can be
@@ -49,15 +204,27 @@ human label) that's ready for analysis or ML down the road.
 
 ```
 Bambu-FM-Print-Data/
-├── main.py               # Entry point: loads config, starts monitors, runs the Tkinter loop
-├── mqtt_listener.py      # PrinterMonitor class — MQTT connection + state machine
-├── database.py           # SQLite helpers: init_db, create_job, update_job_end, write_label
+├── main.py               # Entry point: loads config, starts monitors, runs the Tkinter loop,
+│                         #   and (optionally) starts the station API server + file watcher
+├── mqtt_listener.py      # PrinterMonitor class — MQTT connection + state machine + snapshot()
+├── database.py           # SQLite helpers: print_jobs + uploads tables
 ├── labeler_gui.py        # Tkinter LabelPopup window
 ├── config.json.template  # Safe template (no real credentials) — copy and fill in
-├── requirements.txt      # paho-mqtt>=2.0
+├── requirements.txt      # paho-mqtt, fastapi, uvicorn, httpx
 ├── setup.bat             # Windows: pip install -r requirements.txt  (optional)
 ├── install_autostart.bat # Windows: registers a Task Scheduler job at login  (optional)
 ├── launcher.bat          # Windows: runs main.py with no console window  (optional)
+├── station/              # Runs on the dedicated Windows laptop
+│   ├── api_server.py     # FastAPI: /api/printers, /api/printer/<serial>/camera, /api/health
+│   ├── printer_uploader.py # Bambu HTTP chunked-upload client (writes files to a printer)
+│   ├── file_watcher.py   # Polls Vercel Blob for submissions, renames, uploads to printer
+│   ├── camera.py         # Fetches a JPEG snapshot from a printer over the LAN
+│   └── TUNNEL.md         # Cloudflare Tunnel setup so the Vercel site can reach the station
+├── web/                  # The Vercel Next.js site (Cornell Tech themed)
+│   ├── app/              # App-router pages + /api/upload route
+│   ├── components/       # PrinterCard, StatusBadge, UploadForm
+│   ├── lib/              # station.ts (status/camera fetch), blob.ts (Vercel Blob put)
+│   └── README.md         # Web app setup
 └── README.md
 ```
 
@@ -256,3 +423,69 @@ The result is a self-contained dataset: every row in `print_dataset.db` can be
 traced back to the exact `.3mf` file on the archive drive, making it suitable
 for reproducible analysis or model training. This is not implemented yet —
 `layer_height`, `infill_density`, and `wall_loops` are placeholders for it.
+
+---
+
+## Student print submission (web + station)
+
+In addition to passively labeling prints, the project now supports a
+student-facing workflow: students visit a Vercel site, see live printer status
+and camera snapshots, and submit a sliced `.gcode.3mf` file. The dedicated
+laptop downloads it and pushes it to a printer's Files tab — no auto-start, the
+student starts the print from the printer when physically ready.
+
+### Components
+
+- **`web/`** — a Next.js app (Cornell Tech themed). The status grid calls the
+  station's `/api/printers`; each card shows a camera snapshot. The upload form
+  `POST`s the file to `/api/upload`, which stores it in Vercel Blob under
+  `incoming/<name>__<targetSerial>__<filename>.gcode.3mf`.
+- **`station/api_server.py`** — FastAPI server exposing `/api/printers`,
+  `/api/printer/<serial>/camera`, and `/api/health`. Started by `main.py` in a
+  daemon thread. Expose it to the internet with a Cloudflare Tunnel
+  (`station/TUNNEL.md`).
+- **`station/file_watcher.py`** — polls Vercel Blob's `incoming/` prefix every
+  ~10s, downloads new submissions, renames them to
+  `<name>_<filename>.gcode.3mf`, and uploads them to the chosen (or any idle)
+  printer via `station/printer_uploader.py`. Each submission is recorded in the
+  `uploads` SQLite table.
+- **`station/printer_uploader.py`** — the only module that writes to a printer:
+  the 3-step Bambu local HTTP upload flow (credentials → OSS upload → land
+  file).
+
+### Setup (one-time)
+
+1. Create a Vercel Blob store and copy its read/write token into
+   `config.json` under `web.blob_token` and into `web/.env.local` as
+   `BLOB_READ_WRITE_TOKEN`.
+2. Deploy `web/` to Vercel. Set `STATION_API_URL` to the tunnel hostname.
+3. Set up a Cloudflare Tunnel from the dedicated laptop to `localhost:8080`
+   (`station/TUNNEL.md`). Put the tunnel hostname in `config.json` under
+   `web.station_api_url`.
+4. Restart the daemon on the laptop — `main.py` automatically starts the API
+   server and the file watcher when the `web` section is present.
+
+### Data flow
+
+```
+student → web (Vercel) → /api/upload → Vercel Blob (incoming/)
+                                              ↑ polled by station/file_watcher.py
+station → printer_uploader.upload_file() → printer Files tab
+web (Vercel) → station /api/printers + /camera → printer (MQTT + snapshot)
+```
+
+### `uploads` table
+
+| Column             | Type | Description                                              |
+|--------------------|------|----------------------------------------------------------|
+| `upload_id`        | TEXT | UUID generated when the station picks up the file       |
+| `blob_key`         | TEXT | Vercel Blob pathname (`incoming/<name>__<serial>__<file>`|
+| `student_name`     | TEXT | Sanitized student name                                   |
+| `original_filename`| TEXT | Original uploaded filename                               |
+| `renamed_filename` | TEXT | Final `<name>_<file>.gcode.3mf` sent to the printer       |
+| `target_printer`   | TEXT | Requested printer serial, or `any`                       |
+| `printer_serial`   | TEXT | Printer the file was actually uploaded to                |
+| `upload_status`    | TEXT | `pending` / `uploading` / `done` / `failed`              |
+| `error_message`    | TEXT | Failure detail, if any                                   |
+| `received_at`      | TEXT | ISO-8601 when the station downloaded the file           |
+| `uploaded_at`      | TEXT | ISO-8601 when the printer accepted the file             |

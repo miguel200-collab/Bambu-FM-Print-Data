@@ -41,6 +41,10 @@ _CONFIG_PATH = _BASE_DIR / "config.json"
 # How often the heartbeat line is written to the log (5 minutes).
 _HEARTBEAT_MS = 5 * 60 * 1000
 
+# Where the file_watcher stages downloaded submissions.
+_INCOMING_DIR = _BASE_DIR / "incoming"
+_PROCESSED_DIR = _BASE_DIR / "processed"
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -77,6 +81,80 @@ def _load_config() -> list[dict]:
     if not printers:
         raise ValueError("config.json contains no printers. Add at least one entry.")
     return printers
+
+
+def _load_full_config() -> dict:
+    """Load the entire config.json (printers + web section)."""
+    if not _CONFIG_PATH.exists():
+        return {}
+    with _CONFIG_PATH.open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _start_station_services(
+    monitors: list[PrinterMonitor],
+    full_config: dict,
+) -> list:
+    """
+    Start the FastAPI status/camera server and the Vercel Blob file watcher.
+
+    Both are optional: if the "web" section of config.json is missing, or the
+    extra dependencies (fastapi/uvicorn/httpx) aren't installed, we log a notice
+    and continue running just the print-labeling daemon.
+
+    Returns the list of stoppable service objects (for graceful shutdown).
+    """
+    services: list = []
+    web_cfg = full_config.get("web", {}) or {}
+
+    # A registry the API server calls on every request to get the live monitors.
+    def get_monitors() -> list[PrinterMonitor]:
+        return monitors
+
+    # ---- File watcher (Vercel Blob -> printer) ----
+    blob_token = web_cfg.get("blob_token")
+    if blob_token:
+        try:
+            from station.file_watcher import FileWatcher
+        except ImportError as exc:
+            log.warning("file_watcher unavailable (missing dependency): %s", exc)
+        else:
+            watcher = FileWatcher(
+                blob_token=blob_token,
+                get_monitors=get_monitors,
+                base_dir=_BASE_DIR,
+                inbox_dir=Path(web_cfg["inbox_dir"]) if web_cfg.get("inbox_dir") else None,
+                poll_interval=float(web_cfg.get("poll_interval_s", 10)),
+            )
+            watcher.start()
+            services.append(watcher)
+    else:
+        log.info("No 'web.blob_token' in config.json — file watcher disabled.")
+
+    # ---- FastAPI status + camera server ----
+    api_host = web_cfg.get("api_host", "0.0.0.0")
+    api_port = int(web_cfg.get("api_port", 8080))
+    try:
+        import uvicorn
+        from station.api_server import create_app
+    except ImportError as exc:
+        log.warning("Station API server unavailable (missing dependency): %s", exc)
+        return services
+
+    app = create_app(get_monitors)
+    config = uvicorn.Config(app, host=api_host, port=api_port, log_level="info")
+    server = uvicorn.Server(config)
+
+    def _serve() -> None:
+        try:
+            server.run()
+        except Exception as exc:  # pragma: no cover — daemon thread
+            log.exception("Station API server crashed: %s", exc)
+
+    threading.Thread(target=_serve, name="station-api", daemon=True).start()
+    log.info("Station API listening on http://%s:%d (use a tunnel to expose it)", api_host, api_port)
+    services.append(server)
+    return services
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +313,7 @@ def main() -> None:
     event_queue: queue.Queue = queue.Queue()
     monitors: list[PrinterMonitor] = []
     serial_to_name: dict[str, str] = {}
+    full_config: dict = {}
 
     if args.mock:
         log.info("MOCK MODE — no real printers will be contacted.")
@@ -246,6 +325,7 @@ def main() -> None:
         ).start()
     else:
         printers = _load_config()
+        full_config = _load_full_config()
         log.info("Loaded %d printer(s) from config.json.", len(printers))
         for p in printers:
             serial_to_name[p["serial"]] = p["name"]
@@ -262,6 +342,10 @@ def main() -> None:
     # Re-prompt for any completed print that never got labeled (e.g. the daemon
     # was closed while a popup was open). Their rows already exist in the DB.
     _requeue_unlabeled(event_queue, serial_to_name)
+
+    # Start the optional station services (FastAPI status/camera server + the
+    # Vercel Blob file watcher). No-ops if the "web" section is absent.
+    services = _start_station_services(monitors, full_config)
 
     # ------------------------------------------------------------------
     # Tkinter main loop (must run on the main thread)
@@ -283,6 +367,13 @@ def main() -> None:
     finally:
         for monitor in monitors:
             monitor.stop()
+        for svc in services:
+            stop = getattr(svc, "stop", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception as exc:  # pragma: no cover
+                    log.warning("Error stopping service: %s", exc)
         log.info("=== MakerLAB Data Engine stopped ===")
 
 

@@ -16,6 +16,7 @@ import json
 import logging
 import queue
 import ssl
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -88,6 +89,13 @@ class PrinterMonitor:
         self._bed_temper: Optional[float] = None
         self._filament_type: Optional[str] = None
         self._print_error: Optional[int] = None
+        self._gcode_state: Optional[str] = None
+        # Camera JPEG URL reported by the printer (from the ipcam topic).
+        self._camera_url: Optional[str] = None
+
+        # Guards telemetry reads/writes across the MQTT thread vs. the API
+        # server thread that calls snapshot() / camera_url().
+        self._lock = threading.Lock()
 
         self._client = self._build_client()
 
@@ -110,6 +118,45 @@ class PrinterMonitor:
     def is_connected(self) -> bool:
         """True if the MQTT client currently has a live connection to the printer."""
         return self._client.is_connected()
+
+    @property
+    def serial(self) -> str:
+        return self._serial
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def hostname(self) -> str:
+        return self._hostname
+
+    def snapshot(self) -> dict:
+        """
+        Thread-safe copy of the latest telemetry for the status API.
+
+        Returns a plain dict so it can be JSON-serialised by the FastAPI server
+        without holding the MQTT-thread lock during serialisation.
+        """
+        with self._lock:
+            return {
+                "name": self._name,
+                "serial": self._serial,
+                "ip": self._hostname,
+                "connected": self._client.is_connected(),
+                "state": self._gcode_state,
+                "subtask_name": self._subtask_name,
+                "gcode_file": self._gcode_file,
+                "nozzle_temper": self._nozzle_temper,
+                "bed_temper": self._bed_temper,
+                "filament_type": self._filament_type,
+                "camera_url": self._camera_url,
+            }
+
+    def camera_url(self) -> Optional[str]:
+        """Latest camera JPEG URL reported by the printer, if any."""
+        with self._lock:
+            return self._camera_url
 
     # ------------------------------------------------------------------
     # MQTT client construction
@@ -173,6 +220,13 @@ class PrinterMonitor:
 
         print_data = payload.get("print")
         if not isinstance(print_data, dict):
+            # The ipcam topic (sibling of "print") carries the camera JPEG URL.
+            ipcam = payload.get("ipcam")
+            if isinstance(ipcam, dict):
+                url = ipcam.get("ipcam_url")
+                if url:
+                    with self._lock:
+                        self._camera_url = url
             return
 
         self._update_telemetry(print_data)
@@ -180,6 +234,9 @@ class PrinterMonitor:
         new_state: Optional[str] = print_data.get("gcode_state")
         if new_state is None:
             return
+
+        with self._lock:
+            self._gcode_state = new_state
 
         # First state seen for this printer: record a baseline. Only treat it as
         # a print start if the printer is already actively printing; an existing
@@ -278,25 +335,26 @@ class PrinterMonitor:
             val = print_data.get(key)
             return val if val else None
 
-        if _pick("subtask_name"):
-            self._subtask_name = _pick("subtask_name")
-        if _pick("gcode_file"):
-            self._gcode_file = _pick("gcode_file")
-        if "nozzle_temper" in print_data:
-            self._nozzle_temper = print_data["nozzle_temper"]
-        if "bed_temper" in print_data:
-            self._bed_temper = print_data["bed_temper"]
+        with self._lock:
+            if _pick("subtask_name"):
+                self._subtask_name = _pick("subtask_name")
+            if _pick("gcode_file"):
+                self._gcode_file = _pick("gcode_file")
+            if "nozzle_temper" in print_data:
+                self._nozzle_temper = print_data["nozzle_temper"]
+            if "bed_temper" in print_data:
+                self._bed_temper = print_data["bed_temper"]
 
-        # Capture a non-zero print_error so a future team can see why a job failed.
-        err = print_data.get("print_error")
-        if err:
-            try:
-                self._print_error = int(err)
-            except (TypeError, ValueError):
-                pass
+            # Capture a non-zero print_error so a future team can see why a job failed.
+            err = print_data.get("print_error")
+            if err:
+                try:
+                    self._print_error = int(err)
+                except (TypeError, ValueError):
+                    pass
 
-        # Filament type: try vt_tray (non-AMS) first, then first AMS tray.
-        self._filament_type = self._extract_filament(print_data) or self._filament_type
+            # Filament type: try vt_tray (non-AMS) first, then first AMS tray.
+            self._filament_type = self._extract_filament(print_data) or self._filament_type
 
     @staticmethod
     def _extract_filament(print_data: dict) -> Optional[str]:
