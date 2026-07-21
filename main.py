@@ -112,6 +112,7 @@ def _start_station_services(
         return monitors
 
     # ---- File watcher (Vercel Blob -> printer) ----
+    watcher = None
     blob_token = web_cfg.get("blob_token")
     if blob_token:
         try:
@@ -124,7 +125,9 @@ def _start_station_services(
                 get_monitors=get_monitors,
                 base_dir=_BASE_DIR,
                 inbox_dir=Path(web_cfg["inbox_dir"]) if web_cfg.get("inbox_dir") else None,
-                poll_interval=float(web_cfg.get("poll_interval_s", 10)),
+                # 0 = webhook-driven (no continuous polling); set poll_interval_s
+                # in config to enable a rare safety-net fallback poll.
+                poll_interval=float(web_cfg.get("poll_interval_s", 0) or 0),
             )
             watcher.start()
             services.append(watcher)
@@ -141,7 +144,11 @@ def _start_station_services(
         log.warning("Station API server unavailable (missing dependency): %s", exc)
         return services
 
-    app = create_app(get_monitors)
+    app = create_app(
+        get_monitors,
+        watcher=watcher,
+        webhook_secret=web_cfg.get("webhook_secret") or None,
+    )
     config = uvicorn.Config(app, host=api_host, port=api_port, log_level="info")
     server = uvicorn.Server(config)
 

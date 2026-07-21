@@ -13,6 +13,10 @@ section in `../README.md`).
 3. Copy `.env.example` to `.env.local` and fill in:
    - `STATION_API_URL` — the public URL of the station's FastAPI server
      (exposed via a Cloudflare Tunnel; see `../station/TUNNEL.md`).
+   - `STATION_WEBHOOK_SECRET` — shared secret sent in the `x-station-key` header
+     when notifying the station's `/api/blob-webhook`. Must match
+     `web.webhook_secret` in the laptop's `config.json`. Generate with
+     `openssl rand -hex 32`.
    - `BLOB_READ_WRITE_TOKEN` — from your Vercel Blob store.
 4. `npm run dev` (local) or push to Vercel.
 
@@ -21,9 +25,14 @@ section in `../README.md`).
 - The browser `POST`s the file to `/api/upload` (this app's route handler).
 - The route stores the file in Vercel Blob at
   `incoming/<name>__<targetSerial>__<filename>.gcode.3mf`.
-- The station's `file_watcher.py` polls the `incoming/` prefix, downloads the
-  file, renames it to `<name>_<filename>.gcode.3mf`, and drops it into the
-  laptop's inbox folder (e.g. `C:\BambuSubmissions\<student name>\`).
+- The route then best-effort notifies the station's `/api/blob-webhook`
+  endpoint (over the Cloudflare Tunnel) with `{pathname, url}` so the laptop
+  downloads the blob immediately — **no polling**. If the tunnel/laptop is
+  unreachable the blob stays safely in Blob, and the laptop grabs it via a
+  single catch-up `list` on next startup. A failed notify never fails the upload.
+- The station's `file_watcher.py` downloads the blob by URL, renames it to
+  `<name>_<filename>.gcode.3mf`, and drops it into the laptop's inbox folder
+  (e.g. `C:\BambuSubmissions\<student name>\`).
 - **In the lab**, the student opens Bambu Farm Manager on the dedicated laptop,
   clicks **Upload**, browses to their folder in the inbox, and selects their
   file. BFM ingests it into its Files tab. The student then clicks

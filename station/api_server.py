@@ -19,11 +19,13 @@ Run standalone for testing:
 
 from __future__ import annotations
 
+import hmac
 import logging
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Optional
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from mqtt_listener import PrinterMonitor
 from station.camera import fetch_snapshot
@@ -36,7 +38,17 @@ log = logging.getLogger(__name__)
 MonitorRegistry = Callable[[], Iterable[PrinterMonitor]]
 
 
-def create_app(get_monitors: MonitorRegistry) -> FastAPI:
+class BlobWebhookPayload(BaseModel):
+    """Body POSTed by the Vercel site after a successful `put()` to Blob."""
+    pathname: str
+    url: str
+
+
+def create_app(
+    get_monitors: MonitorRegistry,
+    watcher: Optional[object] = None,
+    webhook_secret: Optional[str] = None,
+) -> FastAPI:
     app = FastAPI(title="Bambu Farm Manager — Station API", version="1.0")
 
     # The Vercel site lives on a different origin, so CORS is required for the
@@ -45,7 +57,7 @@ def create_app(get_monitors: MonitorRegistry) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],  # tightened by main.py via env in production
-        allow_methods=["GET", "OPTIONS"],
+        allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
 
@@ -73,6 +85,26 @@ def create_app(get_monitors: MonitorRegistry) -> FastAPI:
             raise HTTPException(status_code=502, detail="camera not reachable")
 
         return Response(content=jpeg, media_type="image/jpeg")
+
+    @app.post("/api/blob-webhook")
+    def blob_webhook(payload: BlobWebhookPayload, request: Request) -> dict:
+        """
+        Notified by the Vercel site after a student upload lands in Blob.
+
+        The site sends the blob's `pathname` and `url`; we enqueue it on the
+        FileWatcher for download + processing. Auth is a shared secret sent in
+        the `x-station-key` header (the tunnel is HTTPS, so it isn't sniffable).
+        """
+        if webhook_secret:
+            provided = request.headers.get("x-station-key", "")
+            if not hmac.compare_digest(provided, webhook_secret):
+                raise HTTPException(status_code=401, detail="invalid station key")
+        if watcher is None:
+            raise HTTPException(status_code=503, detail="file watcher not configured")
+
+        blob = {"pathname": payload.pathname, "url": payload.url}
+        watcher.enqueue_blob(blob)  # type: ignore[attr-defined]
+        return {"ok": True, "enqueued": payload.pathname}
 
     return app
 

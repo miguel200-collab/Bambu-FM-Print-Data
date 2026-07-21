@@ -32,9 +32,10 @@
   "web": {
     "blob_token": "vercel_blob_rw_REPLACE_ME",
     "station_api_url": "https://makerlab-status.YOUR_TUNNEL.cfargotunnel.com",
+    "webhook_secret": "REPLACE_WITH_LONG_RANDOM_SECRET",
     "api_host": "0.0.0.0",
     "api_port": 8080,
-    "poll_interval_s": 10,
+    "poll_interval_s": 0,
     "inbox_dir": "C:\\BambuSubmissions"
   }
 }

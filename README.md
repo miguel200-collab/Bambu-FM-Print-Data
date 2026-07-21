@@ -41,8 +41,8 @@ print" action the user wants to preserve.
 
 ```
 student (home) → Vercel (Next.js) site → /api/upload → Vercel Blob (incoming/)
-                                                       ↑ polled by station/file_watcher.py (~10s)
-station laptop → file_watcher renames to <name>_<file>.gcode.3mf → inbox folder (C:\BambuSubmissions\<name>\)
+                                                       ↓ site POSTs {pathname,url} to station /api/blob-webhook (best-effort)
+station laptop → file_watcher downloads the blob by URL, renames to <name>_<file>.gcode.3mf → inbox folder (C:\BambuSubmissions\<name>\)
 student (in lab) → BFM Client → Upload → select file from inbox → Files tab → Create / Direct to Print → printer (LAN)
 ```
 
@@ -51,7 +51,13 @@ student (in lab) → BFM Client → Upload → select file from inbox → Files 
   Tunnel (see `station/TUNNEL.md`). The laptop fetches printer telemetry over
   MQTT (existing `mqtt_listener.py`) and camera JPEGs over the LAN.
 - **File submission** is async and decoupled through Vercel Blob: the site
-  writes to Blob, the laptop polls Blob. No tunnel needed for the upload path.
+  writes to Blob, then notifies the laptop via a webhook (`POST /api/blob-webhook`
+  on the tunnel) so the laptop downloads the blob immediately — **no polling**.
+  This keeps the laptop within Vercel Blob's free Hobby operation limits (a 10s
+  poll loop would exhaust the 2,000 advanced-ops/month quota in hours, since
+  every `list` counts as an advanced op). If the tunnel is down when a webhook
+  fires, the blob simply stays in Blob and the laptop grabs it via a single
+  catch-up `list` on next startup. No tunnel needed for the upload path itself.
 - **The "into BFM" step is manual** (human clicks Upload + selects the file).
   This is the decided approach ("Pivot A") — it works today and needs no BFM
   reverse-engineering. Fully automating that last click is an *optional* future
@@ -61,13 +67,16 @@ student (in lab) → BFM Client → Upload → select file from inbox → Files 
 
 - `mqtt_listener.py` — added `snapshot()` + `camera_url()` + thread lock.
 - `database.py` — added `uploads` table + helpers.
-- `station/api_server.py` — FastAPI: `/api/printers`, `/api/printer/<serial>/camera`, `/api/health`.
+- `station/api_server.py` — FastAPI: `/api/printers`, `/api/printer/<serial>/camera`, `/api/health`, and `POST /api/blob-webhook` (enqueue submissions for the file watcher, shared-secret auth).
 - `station/camera.py` — fetches a JPEG snapshot from a printer over the LAN.
-- `station/file_watcher.py` — polls Vercel Blob `incoming/`, downloads, renames to
-  `<name>_<filename>.gcode.3mf`, records in the `uploads` table, and archives
-  the renamed file into the organized inbox folder
-  (`C:\BambuSubmissions\<sanitized name>\<name>_<filename>.gcode.3mf` by
-  default; configurable via `web.inbox_dir` in `config.json`).
+- `station/file_watcher.py` — **webhook-driven**: receives `{pathname,url}` from
+  the station's `/api/blob-webhook` endpoint, downloads the blob by URL, renames
+  it to `<name>_<filename>.gcode.3mf`, records it in the `uploads` table, uploads
+  it to a printer, deletes the blob, and archives the renamed file into the
+  organized inbox (`C:\BambuSubmissions\<sanitized name>\<name>_<filename>.gcode.3mf`
+  by default; configurable via `web.inbox_dir`). Does a single catch-up `list` on
+  startup for anything uploaded while offline; an optional rare fallback poll
+  (`web.poll_interval_s`, default `0` = off) can be enabled as a safety net.
 - `main.py` — starts the API server + file watcher in daemon threads (optional,
   only when the `web` config section is present).
 - `config.json.template`, `requirements.txt`, `.gitignore` — extended.
@@ -444,11 +453,15 @@ student starts the print from the printer when physically ready.
   `/api/printer/<serial>/camera`, and `/api/health`. Started by `main.py` in a
   daemon thread. Expose it to the internet with a Cloudflare Tunnel
   (`station/TUNNEL.md`).
-- **`station/file_watcher.py`** — polls Vercel Blob's `incoming/` prefix every
-  ~10s, downloads new submissions, renames them to
-  `<name>_<filename>.gcode.3mf`, and uploads them to the chosen (or any idle)
+- **`station/file_watcher.py`** — **webhook-driven**. When the station's
+  `/api/blob-webhook` endpoint is notified that a new submission landed in
+  Vercel Blob's `incoming/` prefix, it downloads the blob by URL, renames it to
+  `<name>_<filename>.gcode.3mf`, and uploads it to the chosen (or any idle)
   printer via `station/printer_uploader.py`. Each submission is recorded in the
-  `uploads` SQLite table.
+  `uploads` SQLite table. On startup it does one catch-up `list` to grab anything
+  uploaded while offline; an optional rare fallback poll
+  (`web.poll_interval_s`, default `0` = off) is a safety net — keep it rare on the
+  Hobby plan, since each `list` is one advanced operation (2,000/month max).
 - **`station/printer_uploader.py`** — the only module that writes to a printer:
   the 3-step Bambu local HTTP upload flow (credentials → OSS upload → land
   file).
@@ -456,21 +469,24 @@ student starts the print from the printer when physically ready.
 ### Setup (one-time)
 
 1. Create a Vercel Blob store and copy its read/write token into
-   `config.json` under `web.blob_token` and into `web/.env.local` as
-   `BLOB_READ_WRITE_TOKEN`.
-2. Deploy `web/` to Vercel. Set `STATION_API_URL` to the tunnel hostname.
-3. Set up a Cloudflare Tunnel from the dedicated laptop to `localhost:8080`
+   `config.json` under `web.blob_token` and into `web/.env.local` (and the
+   Vercel project env vars) as `BLOB_READ_WRITE_TOKEN`.
+2. Generate a shared webhook secret (e.g. `openssl rand -hex 32`) and put it in
+   `config.json` under `web.webhook_secret` and in the Vercel project env vars
+   as `STATION_WEBHOOK_SECRET`. The two must match.
+3. Deploy `web/` to Vercel. Set `STATION_API_URL` to the tunnel hostname.
+4. Set up a Cloudflare Tunnel from the dedicated laptop to `localhost:8080`
    (`station/TUNNEL.md`). Put the tunnel hostname in `config.json` under
    `web.station_api_url`.
-4. Restart the daemon on the laptop — `main.py` automatically starts the API
+5. Restart the daemon on the laptop — `main.py` automatically starts the API
    server and the file watcher when the `web` section is present.
 
 ### Data flow
 
 ```
 student → web (Vercel) → /api/upload → Vercel Blob (incoming/)
-                                              ↑ polled by station/file_watcher.py
-station → printer_uploader.upload_file() → printer Files tab
+                                              ↓ /api/upload POSTs {pathname,url} to station /api/blob-webhook (best-effort)
+station → file_watcher downloads blob by URL → printer_uploader.upload_file() → printer Files tab
 web (Vercel) → station /api/printers + /camera → printer (MQTT + snapshot)
 ```
 
