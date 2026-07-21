@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { upload } from "@vercel/blob/client";
 import type { PrinterSnapshot } from "@/lib/station";
+import { buildPathname } from "@/lib/blob";
 
 interface Props {
   printers: PrinterSnapshot[];
@@ -16,6 +18,7 @@ export function UploadForm({ printers }: Props) {
     msg: "",
   });
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<number | null>(null);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -28,24 +31,27 @@ export function UploadForm({ printers }: Props) {
       return;
     }
     setBusy(true);
+    setProgress(0);
     setStatus({ kind: null, msg: "" });
     try {
-      const fd = new FormData();
-      fd.append("studentName", name.trim());
-      fd.append("targetPrinter", target);
-      fd.append("file", file);
-      const res = await fetch("/api/upload", { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        throw new Error(data.error || "Upload failed");
-      }
+      const pathname = buildPathname(name.trim(), target, file.name);
+      const blob = await upload(pathname, file, {
+        access: "private",
+        handleUploadUrl: "/api/upload",
+        multipart: true,
+        clientPayload: JSON.stringify({ studentName: name.trim(), targetPrinter: target }),
+        onUploadProgress: (evt) => setProgress(Math.round(evt.percentage)),
+      });
       setStatus({
         kind: "ok",
         msg: `Submitted! The station will upload "${file.name}" to the printer shortly.`,
       });
       setFile(null);
+      setProgress(null);
+      void blob;
     } catch (err) {
       setStatus({ kind: "err", msg: err instanceof Error ? err.message : "Upload failed" });
+      setProgress(null);
     } finally {
       setBusy(false);
     }
@@ -89,6 +95,13 @@ export function UploadForm({ printers }: Props) {
       <button className="btn" type="submit" disabled={busy}>
         {busy ? "Submitting…" : "Submit print"}
       </button>
+
+      {progress !== null && (
+        <div className="form-msg" aria-live="polite">
+          Uploading… {progress}%
+          <progress value={progress} max={100} style={{ width: "100%", marginTop: 6 }} />
+        </div>
+      )}
 
       {status.kind && (
         <div className={`form-msg ${status.kind}`}>{status.msg}</div>

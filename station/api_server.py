@@ -39,9 +39,12 @@ MonitorRegistry = Callable[[], Iterable[PrinterMonitor]]
 
 
 class BlobWebhookPayload(BaseModel):
-    """Body POSTed by the Vercel site after a successful `put()` to Blob."""
+    """Body POSTed by the Vercel site after a successful upload to Blob."""
     pathname: str
     url: str
+    # Signed URL for a private store (the canonical `url` is not fetchable without
+    # auth). Optional — absent for public stores / older payloads.
+    downloadUrl: Optional[str] = None
 
 
 def create_app(
@@ -103,6 +106,8 @@ def create_app(
             raise HTTPException(status_code=503, detail="file watcher not configured")
 
         blob = {"pathname": payload.pathname, "url": payload.url}
+        if payload.downloadUrl:
+            blob["downloadUrl"] = payload.downloadUrl
         watcher.enqueue_blob(blob)  # type: ignore[attr-defined]
         return {"ok": True, "enqueued": payload.pathname}
 

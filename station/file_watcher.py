@@ -240,7 +240,10 @@ class FileWatcher:
         return out
 
     def _download_blob(self, blob: dict, dest: Path) -> None:
-        url = blob.get("url") or blob.get("downloadUrl")
+        # Private Blob store: `url` is not fetchable without auth; prefer the
+        # signed `downloadUrl` (valid up to 7 days). Fall back to `url` for
+        # public stores / older payloads.
+        url = blob.get("downloadUrl") or blob.get("url")
         if not url:
             raise printer_uploader.UploadError("blob has no download url")
         with httpx.Client(timeout=_TIMEOUT) as client:
