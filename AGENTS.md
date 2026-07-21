@@ -6,7 +6,7 @@
 
 ---
 
-## 0. Where we are right now (Jul 21, 2026, ~11:30 ET)
+## 0. Where we are right now (Jul 21, 2026, ~11:55 ET)
 
 **Goal of this session:** make the live upload form accept real (large)
 `.gcode.3mf` files, keep it free on the Hobby plan, and update the docs.
@@ -21,8 +21,8 @@
   then landed successfully under `incoming/`.
 - Implemented the client-side upload rewrite (Issue #1): the browser now uploads
   directly to Vercel Blob via `handleUpload`/`upload()` from `@vercel/blob/client`,
-  bypassing the 4.5 MB serverless body limit. Changes (committed locally, NOT yet
-  pushed):
+  bypassing the 4.5 MB serverless body limit. Pushed (`09f1949` + `8fcab36` on
+  `origin/main`) and redeployed via `npx vercel --prod`. Changes:
   - `web/app/api/upload/route.ts` — `handleUpload` route: `onBeforeGenerateToken`
     validates the pathname + caps size at 250 MB; `onUploadCompleted` forwards
     `{pathname, url, downloadUrl}` to the laptop's `/api/blob-webhook`.
@@ -35,23 +35,42 @@
   - `station/file_watcher.py` — `_download_blob` now prefers `downloadUrl` (signed)
     over `url` (private stores need the signed URL for GET; `url` is still used for
     the authenticated DELETE).
-- Verified `npm run build` passes locally with all web changes.
+- Verified `npm run build` passes locally; secret scan clean before push.
+- **Phase 1 COMPLETE:** redeployed; a large `.gcode.3mf` upload succeeded on the
+  live site (form showed "Submitted!", progress bar appeared). Vercel Overview
+  showed 0% error rate over 6 function invocations. Big uploads now work and
+  cost $0 on Hobby.
+
+**Callback verification (still open):** the `onUploadCompleted` callback (which
+notifies the laptop) was not yet visually confirmed in the logs. Where to look:
+Vercel dashboard → `bambu-farm-web` → **Logs** tab (left sidebar) → filter for
+the `/api/upload` function around the upload time. Look for either the station
+notify attempt or `"No station configured"` (expected, since `STATION_API_URL`
+isn't set yet). The dashboard's Overview "Function Invocations" counter ticking
+up (it showed 6) is indirect evidence the route ran, but the Logs tab has the
+actual stdout/console.warn lines. Note: `STATION_API_URL` is not set yet, so the
+notify is intentionally skipped — the blob just sits in Blob until the laptop's
+catch-up `list`. That is expected and fine for Phase 1.
 
 **Next actions (blocked on user):**
-- `git push origin main` (protected) — push the new client-upload commit(s).
-- `cd web && npx vercel --prod` to redeploy.
-- Test upload with a **large** `.gcode.3mf` (>4.5 MB); expect a blob under
-  `incoming/` in Storage → `bambu-submissions`, and (if the laptop/tunnel is up)
-  laptop logs `enqueued blob` → `Uploaded ... and archived to C:\BambuSubmissions\<name>\`.
-- Then set up the laptop (Issue #3) if not already: see §8 step 6.
+- (Optional now) Confirm the callback in the Logs tab as above.
+- **Phase 2 — set up the laptop (Issue #3):** back up `config.json` +
+  `print_dataset.db`; stop old daemon; `git clone`; restore the two files;
+  `pip install -r requirements.txt`; add the `web` section to `config.json`
+  (blob_token, webhook_secret, station_api_url, api_host 127.0.0.1, api_port 8080,
+  poll_interval_s 0, inbox_dir C:\BambuSubmissions); `mkdir C:\BambuSubmissions`;
+  set up the Cloudflare Tunnel (`station/TUNNEL.md`); `python main.py`.
+- **Phase 3:** set `STATION_API_URL` in the Vercel dashboard to the tunnel
+  hostname; redeploy; end-to-end test (upload → laptop logs `enqueued blob` →
+  `Uploaded ... and archived to C:\BambuSubmissions\<name>\` → blob deleted).
 
 **If something went wrong / how to recover:**
-- The previously-pushed private-store fix (`5d7d9ae` + `de001cb`) is on `origin/main`
-  and live — small uploads already work. The new client-upload commit is local only;
-  if its build breaks on Vercel, production stays on the previous deploy (Vercel
-  keeps the old deployment live on build failure) — just fix and redeploy.
-- To roll back the client-upload change only: `git reset --hard de001cb` (keeps the
-  private-store fix, discards the client-upload rewrite).
+- All four session commits are on `origin/main` and deployed; small AND large
+  uploads work. If a future build breaks on Vercel, production stays on the
+  last good deploy (Vercel keeps the old deployment live on build failure) — fix
+  and redeploy.
+- To roll back the client-upload change only: `git reset --hard de001cb` (keeps
+  the private-store fix, discards the client-upload rewrite `09f1949`+`8fcab36`).
 - Private-store download caveat: signed `downloadUrl`s expire (≤7 days). The laptop
   uses them for GET and the canonical `url` for DELETE. If a webhook-delivered URL
   expires before the laptop processes it, the by-URL GET fails; the laptop's startup
@@ -203,14 +222,9 @@ contain only placeholders.
 ### GitHub
 - Repo: https://github.com/miguel200-collab/Bambu-FM-Print-Data
 - Branch: `main` (protected — pushes require user confirmation)
-- On `origin/main`: `de001cb` (Upgrade @vercel/blob to ^2.6.1) and `5d7d9ae`
-  (Use private access for submissions). Both pushed + deployed; small uploads
-  work.
-- Pending push (local only): the client-side upload rewrite (Issue #1) —
-  `handleUpload`/`upload()` rewrite of `web/app/api/upload/route.ts` +
-  `web/components/UploadForm.tsx` + `web/lib/blob.ts`, plus the laptop-side
-  `downloadUrl` handling in `station/api_server.py` + `station/file_watcher.py`.
-  `npm run build` passes locally. Push + redeploy + test with a large file next.
+- On `origin/main` (all deployed): `8fcab36` (docs), `09f1949` (client-side
+  upload rewrite), `de001cb` (Upgrade @vercel/blob to ^2.6.1), `5d7d9ae` (Use
+  private access for submissions). All pushed; working tree clean.
 
 ### Vercel site
 - Project: `bambu-farm-web` (Hobby plan, account `ramirezperazamiguel-7620s-projects`)
@@ -237,20 +251,21 @@ contain only placeholders.
 
 ## 7. Known issues / blockers (current)
 
-### Issue #1 — Vercel 4.5 MB body limit (RESOLVED, pending redeploy + test)
+### Issue #1 — Vercel 4.5 MB body limit (RESOLVED, deployed)
 Vercel enforces a hard 4.5 MB request body limit on all serverless functions,
 on every plan, not increasable. The old `web/app/api/upload/route.ts` did a
 **server-side** `put()` (file through the function), so any real `.gcode.3mf`
 (10–50 MB) was rejected with HTTP 413 (`FUNCTION_PAYLOAD_TOO_LARGE`).
 
-**Fix (implemented, committed locally, pending push + redeploy + test):**
-switched to **client-side uploads** using `handleUpload`/`upload()` from
-`@vercel/blob/client`. The browser uploads directly to Vercel Blob with a
-short-lived client token (max 250 MB, multipart for >100 MB), so the file
-never passes through the function and the 4.5 MB limit doesn't apply. The
-route's `onUploadCompleted` callback (fired by Vercel Blob after the upload)
-forwards `{pathname, url, downloadUrl}` to the laptop's `/api/blob-webhook`.
-Stays free on Hobby (see §8 cost notes). `npm run build` passes locally.
+**Fix (deployed):** switched to **client-side uploads** using
+`handleUpload`/`upload()` from `@vercel/blob/client`. The browser uploads
+directly to Vercel Blob with a short-lived client token (max 250 MB, multipart
+for >100 MB), so the file never passes through the function and the 4.5 MB limit
+doesn't apply. The route's `onUploadCompleted` callback (fired by Vercel Blob
+after the upload) forwards `{pathname, url, downloadUrl}` to the laptop's
+`/api/blob-webhook`. Stays free on Hobby (see §8 cost notes). `npm run build`
+passes; deployed via `npx vercel --prod`; a large `.gcode.3mf` upload succeeded
+on the live site (Phase 1 complete).
 
 ### Issue #2 — "No token found" on the live site (RESOLVED)
 The production deployment was built BEFORE the Blob store env vars were added,
@@ -285,26 +300,11 @@ laptop is set up and does its startup catch-up `list`.
 
 ## 8. The plan
 
-### Immediate (Vercel) — push client-upload rewrite + redeploy + test (NEXT, Jul 21, 2026)
-1. Push the client-side upload commit (local only) to `origin/main` (protected —
-   needs explicit confirmation). `npm run build` passes.
-2. Redeploy: `cd web && npx vercel --prod` (or dashboard Redeploy with Build Cache
-   unchecked).
-3. Test with a **large** `.gcode.3mf` (>4.5 MB) — confirm a blob appears in
-   `bambu-submissions` under `incoming/`, and (if the laptop/tunnel is up) the
-   laptop logs `enqueued blob` → `Uploaded ... and archived to
-   C:\BambuSubmissions\<name>\` → blob deleted from Vercel Blob. If
-   `STATION_API_URL` isn't set yet, the notify is skipped and the blob just sits
-   in Blob until the laptop's catch-up `list` — still a pass for the upload test.
-4. Verify the `onUploadCompleted` callback fired: check the `/api/upload`
-   function logs for the station notify attempt. Requires `BLOB_WEBHOOK_PUBLIC_KEY`
-   (already set) for callback verification.
-
-### Done this session (for reference)
-- Private-store fix (`5d7d9ae` + `de001cb`) — pushed + deployed; small uploads work.
-- Client-side upload rewrite (Issue #1) — `handleUpload`/`upload()`, 250 MB cap,
-  multipart, progress bar, `access: "private"`. Laptop webhook + `file_watcher`
-  updated to carry/prefer the signed `downloadUrl`. Build passes. Pending push.
+### Phase 1 — big uploads live (DONE, Jul 21, 2026)
+Client-side upload rewrite (`09f1949` + `8fcab36`) pushed, deployed via
+`npx vercel --prod`, and verified with a large `.gcode.3mf` upload on the live
+site. 0% error rate. Big uploads now work for $0 on Hobby. (Optional: confirm the
+`onUploadCompleted` callback in the Vercel **Logs** tab — see §0.)
 
 ### Cost (Hobby, stays free)
 - 4.5 MB function body limit: bypassed (browser → Blob direct).
