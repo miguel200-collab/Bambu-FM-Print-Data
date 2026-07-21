@@ -2,9 +2,9 @@
 
 A futuristic, Cornell Tech-themed Next.js site where students see live printer
 status + camera snapshots and submit sliced `.gcode.3mf` files. Submitted files
-land in Vercel Blob; the dedicated laptop polls Blob and drops each renamed file
-into an inbox folder on the laptop (see `../station/` and the "Project context"
-section in `../README.md`).
+land in Vercel Blob; the dedicated laptop is notified via a webhook (no polling)
+and drops each renamed file into an inbox folder on the laptop (see `../station/`
+and the "Project context" section in `../README.md`).
 
 ## Setup
 
@@ -22,15 +22,25 @@ section in `../README.md`).
 
 ## How submission works
 
-- The browser `POST`s the file to `/api/upload` (this app's route handler).
-- The route stores the file in Vercel Blob at
-  `incoming/<name>__<targetSerial>__<filename>.gcode.3mf`.
-- The route then best-effort notifies the station's `/api/blob-webhook`
-  endpoint (over the Cloudflare Tunnel) with `{pathname, url}` so the laptop
-  downloads the blob immediately — **no polling**. If the tunnel/laptop is
-  unreachable the blob stays safely in Blob, and the laptop grabs it via a
-  single catch-up `list` on next startup. A failed notify never fails the upload.
-- The station's `file_watcher.py` downloads the blob by URL, renames it to
+- The browser uses **client-side uploads** (`upload()` from `@vercel/blob/client`):
+  it `POST`s to `/api/upload` (this app's route handler, via `handleUpload`) to get
+  a short-lived client token, then uploads the file **directly to Vercel Blob** at
+  `incoming/<name>__<targetSerial>__<filename>.gcode.3mf`. Because the file never
+  passes through the serverless function, Vercel's 4.5 MB request body limit does
+  not apply — real 10–50 MB `.gcode.3mf` slices upload fine. A progress bar
+  reflects the direct upload.
+- When the upload completes, Vercel Blob calls back into `/api/upload`
+  (`onUploadCompleted`), which best-effort notifies the station's
+  `/api/blob-webhook` endpoint (over the Cloudflare Tunnel) with
+  `{pathname, url, downloadUrl}` so the laptop downloads the blob immediately —
+  **no polling**. If the tunnel/laptop is unreachable the blob stays safely in
+  Blob, and the laptop grabs it via a single catch-up `list` on next startup. A
+  failed notify never fails the upload.
+- The Blob store is **Private**, so the laptop downloads each blob via the signed
+  `downloadUrl` (valid ≤ 7 days) and deletes it via the authenticated canonical
+  `url`. The `file_watcher` deletes each blob after processing, which keeps Blob
+  storage well under the 1 GB Hobby limit under normal operation.
+- The station's `file_watcher.py` downloads the blob, renames it to
   `<name>_<filename>.gcode.3mf`, and drops it into the laptop's inbox folder
   (e.g. `C:\BambuSubmissions\<student name>\`).
 - **In the lab**, the student opens Bambu Farm Manager on the dedicated laptop,

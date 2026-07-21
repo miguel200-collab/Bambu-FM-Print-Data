@@ -40,9 +40,11 @@ print" action the user wants to preserve.
 ### Architecture (decided)
 
 ```
-student (home) → Vercel (Next.js) site → /api/upload → Vercel Blob (incoming/)
-                                                       ↓ site POSTs {pathname,url} to station /api/blob-webhook (best-effort)
-station laptop → file_watcher downloads the blob by URL, renames to <name>_<file>.gcode.3mf → inbox folder (C:\BambuSubmissions\<name>\)
+student (home) → Vercel (Next.js) site → /api/upload (handleUpload: issue client token)
+                       ↓ browser uploads the .gcode.3mf directly to Vercel Blob (incoming/), bypassing the 4.5 MB function limit
+Vercel Blob → upload-completed callback → /api/upload (onUploadCompleted)
+                       ↓ /api/upload POSTs {pathname,url,downloadUrl} to station /api/blob-webhook (best-effort)
+station laptop → file_watcher downloads the blob via the signed downloadUrl, renames to <name>_<file>.gcode.3mf → inbox folder (C:\BambuSubmissions\<name>\)
 student (in lab) → BFM Client → Upload → select file from inbox → Files tab → Create / Direct to Print → printer (LAN)
 ```
 
@@ -50,14 +52,26 @@ student (in lab) → BFM Client → Upload → select file from inbox → Files 
   the laptop (`station/api_server.py`), exposed to the internet via a Cloudflare
   Tunnel (see `station/TUNNEL.md`). The laptop fetches printer telemetry over
   MQTT (existing `mqtt_listener.py`) and camera JPEGs over the LAN.
-- **File submission** is async and decoupled through Vercel Blob: the site
-  writes to Blob, then notifies the laptop via a webhook (`POST /api/blob-webhook`
-  on the tunnel) so the laptop downloads the blob immediately — **no polling**.
-  This keeps the laptop within Vercel Blob's free Hobby operation limits (a 10s
-  poll loop would exhaust the 2,000 advanced-ops/month quota in hours, since
-  every `list` counts as an advanced op). If the tunnel is down when a webhook
-  fires, the blob simply stays in Blob and the laptop grabs it via a single
-  catch-up `list` on next startup. No tunnel needed for the upload path itself.
+- **File submission** is async and decoupled through Vercel Blob. The site uses
+  **client-side uploads** (`handleUpload`/`upload()` from `@vercel/blob/client`):
+  the browser asks `/api/upload` for a short-lived client token, then uploads the
+  file **directly to Vercel Blob** — the file never passes through the serverless
+  function, so Vercel's 4.5 MB request body limit does not apply and real
+  10–50 MB `.gcode.3mf` slices upload fine. When the upload completes, Vercel Blob
+  calls back into `/api/upload` (`onUploadCompleted`), which best-effort POSTs
+  `{pathname, url, downloadUrl}` to the laptop's `/api/blob-webhook` (over the
+  Cloudflare Tunnel) so the laptop downloads the blob immediately — **no
+  polling**. This keeps the laptop within Vercel Blob's free Hobby operation
+  limits (a 10s poll loop would exhaust the advanced-ops quota; the webhook-driven
+  design does only one catch-up `list` on startup). If the tunnel is down when a
+  callback fires, the blob simply stays in Blob and the laptop grabs it via that
+  single catch-up `list` on next startup. No tunnel needed for the upload path
+  itself.
+- **Private Blob store.** `bambu-submissions` is a Private store, so blobs are not
+  readable via their plain URL. The laptop downloads each blob via the signed
+  `downloadUrl` (valid ≤ 7 days) and deletes it via the authenticated canonical
+  `url`. The `file_watcher` deletes each blob after processing, which keeps Blob
+  storage well under the 1 GB Hobby limit under normal operation.
 - **The "into BFM" step is manual** (human clicks Upload + selects the file).
   This is the decided approach ("Pivot A") — it works today and needs no BFM
   reverse-engineering. Fully automating that last click is an *optional* future
@@ -69,11 +83,12 @@ student (in lab) → BFM Client → Upload → select file from inbox → Files 
 - `database.py` — added `uploads` table + helpers.
 - `station/api_server.py` — FastAPI: `/api/printers`, `/api/printer/<serial>/camera`, `/api/health`, and `POST /api/blob-webhook` (enqueue submissions for the file watcher, shared-secret auth).
 - `station/camera.py` — fetches a JPEG snapshot from a printer over the LAN.
-- `station/file_watcher.py` — **webhook-driven**: receives `{pathname,url}` from
-  the station's `/api/blob-webhook` endpoint, downloads the blob by URL, renames
-  it to `<name>_<filename>.gcode.3mf`, records it in the `uploads` table, uploads
-  it to a printer, deletes the blob, and archives the renamed file into the
-  organized inbox (`C:\BambuSubmissions\<sanitized name>\<name>_<filename>.gcode.3mf`
+- `station/file_watcher.py` — **webhook-driven**: receives `{pathname,url,downloadUrl}`
+  from the station's `/api/blob-webhook` endpoint, downloads the blob via the
+  signed `downloadUrl` (the store is Private, so the plain `url` isn't fetchable),
+  renames it to `<name>_<filename>.gcode.3mf`, records it in the `uploads` table,
+  uploads it to a printer, deletes the blob, and archives the renamed file into
+  the organized inbox (`C:\BambuSubmissions\<sanitized name>\<name>_<filename>.gcode.3mf`
   by default; configurable via `web.inbox_dir`). Does a single catch-up `list` on
   startup for anything uploaded while offline; an optional rare fallback poll
   (`web.poll_interval_s`, default `0` = off) can be enabled as a safety net.
@@ -447,21 +462,25 @@ student starts the print from the printer when physically ready.
 
 - **`web/`** — a Next.js app (Cornell Tech themed). The status grid calls the
   station's `/api/printers`; each card shows a camera snapshot. The upload form
-  `POST`s the file to `/api/upload`, which stores it in Vercel Blob under
-  `incoming/<name>__<targetSerial>__<filename>.gcode.3mf`.
+  uses **client-side uploads**: it asks `/api/upload` for a short-lived client
+  token (`handleUpload`) and uploads the file directly to Vercel Blob at
+  `incoming/<name>__<targetSerial>__<filename>.gcode.3mf` — bypassing Vercel's
+  4.5 MB serverless body limit so real 10–50 MB slices upload fine. A progress
+  bar reflects the direct upload.
 - **`station/api_server.py`** — FastAPI server exposing `/api/printers`,
   `/api/printer/<serial>/camera`, and `/api/health`. Started by `main.py` in a
   daemon thread. Expose it to the internet with a Cloudflare Tunnel
-  (`station/TUNNEL.md`).
+  (`station/TUNNEL.md`). `POST /api/blob-webhook` accepts `{pathname, url,
+  downloadUrl}` and enqueues it for the file watcher (shared-secret auth).
 - **`station/file_watcher.py`** — **webhook-driven**. When the station's
   `/api/blob-webhook` endpoint is notified that a new submission landed in
-  Vercel Blob's `incoming/` prefix, it downloads the blob by URL, renames it to
-  `<name>_<filename>.gcode.3mf`, and uploads it to the chosen (or any idle)
-  printer via `station/printer_uploader.py`. Each submission is recorded in the
-  `uploads` SQLite table. On startup it does one catch-up `list` to grab anything
-  uploaded while offline; an optional rare fallback poll
-  (`web.poll_interval_s`, default `0` = off) is a safety net — keep it rare on the
-  Hobby plan, since each `list` is one advanced operation (2,000/month max).
+  Vercel Blob's `incoming/` prefix, it downloads the blob via the signed
+  `downloadUrl`, renames it to `<name>_<filename>.gcode.3mf`, and uploads it to
+  the chosen (or any idle) printer via `station/printer_uploader.py`. Each
+  submission is recorded in the `uploads` SQLite table. On startup it does one
+  catch-up `list` to grab anything uploaded while offline; an optional rare
+  fallback poll (`web.poll_interval_s`, default `0` = off) is a safety net —
+  keep it rare on the Hobby plan.
 - **`station/printer_uploader.py`** — the only module that writes to a printer:
   the 3-step Bambu local HTTP upload flow (credentials → OSS upload → land
   file).
@@ -484,9 +503,10 @@ student starts the print from the printer when physically ready.
 ### Data flow
 
 ```
-student → web (Vercel) → /api/upload → Vercel Blob (incoming/)
-                                              ↓ /api/upload POSTs {pathname,url} to station /api/blob-webhook (best-effort)
-station → file_watcher downloads blob by URL → printer_uploader.upload_file() → printer Files tab
+student → web (Vercel) → /api/upload (handleUpload: client token) → browser uploads direct to Vercel Blob (incoming/)
+                                                                       ↓ Vercel Blob upload-completed callback → /api/upload (onUploadCompleted)
+                                                                       ↓ /api/upload POSTs {pathname,url,downloadUrl} to station /api/blob-webhook (best-effort)
+station → file_watcher downloads blob via signed downloadUrl → printer_uploader.upload_file() → printer Files tab
 web (Vercel) → station /api/printers + /camera → printer (MQTT + snapshot)
 ```
 
