@@ -29,7 +29,7 @@ export async function putSubmission(input: UploadSubmissionInput) {
   const pathname = `incoming/${name}__${target}__${filename}`;
 
   return put(pathname, input.file, {
-    access: "public",
+    access: "private",
     addRandomSuffix: false,
     token: process.env.BLOB_READ_WRITE_TOKEN,
   });
