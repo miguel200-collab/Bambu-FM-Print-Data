@@ -104,6 +104,7 @@ def _start_station_services(
 
     Returns the list of stoppable service objects (for graceful shutdown).
     """
+    log = logging.getLogger("main")
     services: list = []
     web_cfg = full_config.get("web", {}) or {}
 

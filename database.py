@@ -239,7 +239,7 @@ def mark_uploaded(
 def list_recent_uploads(limit: int = 50) -> list[sqlite3.Row]:
     """Return the most recent upload rows (for a future station UI / log view)."""
     sql = """
-        SELECT upload_id, student_name, original_filename, renamed_filename,
+        SELECT upload_id, blob_key, student_name, original_filename, renamed_filename,
                target_printer, printer_serial, upload_status, error_message,
                received_at, uploaded_at
         FROM uploads

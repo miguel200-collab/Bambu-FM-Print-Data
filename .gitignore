@@ -38,3 +38,8 @@ Desktop.ini
 .cursor/
 .vscode/
 .idea/
+
+# --- Generated artifacts (presentations, etc.) ---
+*.pptx
+*.ppt
+*.key
