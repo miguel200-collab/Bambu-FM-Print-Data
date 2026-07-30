@@ -307,22 +307,38 @@ class FileWatcher:
             self._download_blob(blob, local_path)
 
             monitor = self._resolve_monitor(target_serial)
-            if monitor is None:
-                raise printer_uploader.UploadError(
-                    f"no available printer for target '{target_serial}'"
-                )
+            printer_serial = monitor.serial if monitor else None
+            printer_name = monitor.name if monitor else "(no available printer)"
 
-            printer_uploader.upload_file(
-                printer_ip=monitor.hostname,
-                access_code=monitor._access_code,  # noqa: SLF001
-                local_path=local_path,
-                remote_filename=renamed,
-                auto_start=False,
-            )
+            # Best-effort push to the printer's Files tab. This step is
+            # deprecated in the decided workflow (the human uploads via BFM),
+            # so a failure here must NOT block archiving or blob deletion —
+            # the file landing in the inbox is the actual goal.
+            if monitor is not None:
+                try:
+                    printer_uploader.upload_file(
+                        printer_ip=monitor.hostname,
+                        access_code=monitor._access_code,  # noqa: SLF001
+                        local_path=local_path,
+                        remote_filename=renamed,
+                        auto_start=False,
+                    )
+                except Exception as push_exc:
+                    log.warning(
+                        "Printer push failed for %s (non-fatal; file still "
+                        "archived to inbox): %s",
+                        pathname, push_exc,
+                    )
+            else:
+                log.warning(
+                    "No available printer for target '%s' (non-fatal; file "
+                    "still archived to inbox).",
+                    target_serial,
+                )
 
             db.mark_uploaded(
                 upload_id=upload_id,
-                printer_serial=monitor.serial,
+                printer_serial=printer_serial,
                 uploaded_at=_now(),
                 status="done",
             )
@@ -333,7 +349,7 @@ class FileWatcher:
             archive = student_folder / renamed
             local_path.replace(archive)
             log.info(
-                "Uploaded %s -> %s and archived to %s", renamed, monitor.name, archive
+                "Archived %s (target %s) to %s", renamed, printer_name, archive
             )
 
         except Exception as exc:

@@ -191,7 +191,7 @@ def upload_file(
     scheme = "https" if use_https else "http"
     base_url = f"{scheme}://{printer_ip}"
 
-    with httpx.Client(verify=_SSL_CTX, timeout=_Timeout) as client:
+    with httpx.Client(verify=_SSL_CTX, timeout=_TIMEOUT) as client:
         creds = _request_credentials(client, base_url, access_code)
         object_name = _upload_to_oss(client, creds, local_path)
         _land_file(

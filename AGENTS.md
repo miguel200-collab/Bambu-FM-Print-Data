@@ -49,9 +49,26 @@ subsections below for history.)
    unchanged, so no database format change. Verified `python -m py_compile
    labeler_gui.py` clean; no linter errors.
 
-4. **Committed both fixes** (this commit) and updated this `AGENTS.md`. The
-   two Jul 29 bug fixes (`main.py` `log`, `database.py` `blob_key`) were
-   already committed in `0b9045f` on Jul 29 and pushed to `origin/main`.
+4. **Committed the 403 fix + popup fix** in `03069d0` (pushed to `origin/main`)
+   and updated this `AGENTS.md`. The two Jul 29 bug fixes (`main.py` `log`,
+   `database.py` `blob_key`) were already committed in `0b9045f` on Jul 29
+   and pushed to `origin/main`.
+5. **Verified the 403 fix end-to-end on the laptop** (`git pull` → restart →
+   fresh upload). Both the catch-up blob and the fresh webhook upload
+   downloaded with `HTTP/1.1 200 OK` — the Bearer-auth fix works. This
+   surfaced a **new, smaller bug** one step later: `NameError: name
+   '_Timeout' is not defined` in `printer_uploader.py` (a typo — the
+   constant is `_TIMEOUT` but was referenced as `_Timeout`). It was always
+   there but unreachable while the 403 blocked the pipeline earlier.
+6. **Fixed the `_Timeout` typo** in `station/printer_uploader.py` (line 194:
+   `_Timeout` → `_TIMEOUT`) and **made the printer push non-fatal** in
+   `station/file_watcher.py` `_process_blob`: the `printer_uploader.upload_file`
+   call is now wrapped in `try/except` so a push failure (or "no available
+   printer") logs a warning but still archives the file to the inbox and
+   deletes the blob. This aligns with the decided workflow (the human
+   uploads via BFM; the laptop's push is a deprecated best-effort
+   convenience). Committed in this follow-up commit. **Awaiting fresh
+   end-to-end re-test on the laptop.**
 
 ### Status of prior blockers (with dates — preserved for history)
 
@@ -67,16 +84,24 @@ subsections below for history.)
 - ✅ **Confusing Yes/No popup wording**: fixed Jul 30 (this session). Visible
   the next time a print job ends on the laptop after a daemon restart with
   the new code.
+- ✅ **`NameError: name '_Timeout' is not defined` in `printer_uploader.py`**:
+  found Jul 30 during the end-to-end re-test (the 403 fix unblocked the
+  pipeline enough to reach this previously-unreachable line). Root cause =
+  a typo (`_Timeout` vs the defined `_TIMEOUT`). Fixed Jul 30 by correcting
+  the typo AND making the printer push non-fatal in `_process_blob`.
 
 ### What's left (next chat)
 
-1. **Verify the 403 fix end-to-end on the laptop** (not yet done): `git pull`
-   on the laptop → restart `python main.py` → upload a fresh `.gcode.3mf`
-   from `https://bambu-farm-web.vercel.app` → confirm the laptop logs
-   `Uploaded ... and archived to C:\BambuSubmissions\<name>\` and the blob is
-   deleted from the Vercel Blob dashboard's `incoming/` folder. The stuck
-   Jul 29 blob (`Miguel__00M09A390900243__BROKER-2-reachy-mini-1.gcode.3mf`)
-   should also get processed and deleted on startup catch-up.
+1. **Re-verify the full happy path on the laptop** after the printer-push
+   fix: `git pull` (to get this follow-up commit) → restart `python main.py`
+   → upload a fresh `.gcode.3mf` from `https://bambu-farm-web.vercel.app`
+   → confirm the laptop logs `Archived <renamed> (target <printer>) to
+   C:\BambuSubmissions\<name>\<renamed>` and the blob is deleted from the
+   Vercel Blob dashboard's `incoming/` folder. The 403 download step is
+   already confirmed working (200 OK); this re-test confirms the file now
+   actually lands in the inbox (the previous run 403'd-then-`_Timeout`'d and
+   left nothing archived). The stuck Jul 29 blob may still be in Vercel —
+   it should get processed and deleted on startup catch-up.
 2. **Regenerate the two leaked secrets.** During diagnosis this session the
    user pasted the real `BLOB_READ_WRITE_TOKEN` and `STATION_WEBHOOK_SECRET`
    in plaintext into the chat (and a prior session had a screenshot leak).
