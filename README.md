@@ -44,14 +44,16 @@ student (home) → Vercel (Next.js) site → /api/upload (handleUpload: issue cl
                        ↓ browser uploads the .gcode.3mf directly to Vercel Blob (incoming/), bypassing the 4.5 MB function limit
 Vercel Blob → upload-completed callback → /api/upload (onUploadCompleted)
                        ↓ /api/upload POSTs {pathname,url,downloadUrl} to station /api/blob-webhook (best-effort)
-station laptop → file_watcher downloads the blob via the signed downloadUrl, renames to <name>_<file>.gcode.3mf → inbox folder (C:\BambuSubmissions\<name>\)
+station laptop → file_watcher downloads the blob (Bearer auth on the GET; prefers signed downloadUrl), renames to <name>_<file>.gcode.3mf → inbox folder (C:\BambuSubmissions\<name>\)
 student (in lab) → BFM Client → Upload → select file from inbox → Files tab → Create / Direct to Print → printer (LAN)
 ```
 
 - **Status + camera** on the Vercel site are read from a small FastAPI server on
-  the laptop (`station/api_server.py`), exposed to the internet via a Cloudflare
-  Tunnel (see `station/TUNNEL.md`). The laptop fetches printer telemetry over
-  MQTT (existing `mqtt_listener.py`) and camera JPEGs over the LAN.
+  the laptop (`station/api_server.py`), exposed to the internet via a tunnel.
+  The live deployment uses **Tailscale Funnel** (free, no domain needed — see
+  `station/TUNNEL.md`); Cloudflare Tunnel is the documented alternative. The
+  laptop fetches printer telemetry over MQTT (existing `mqtt_listener.py`) and
+  camera JPEGs over the LAN.
 - **File submission** is async and decoupled through Vercel Blob. The site uses
   **client-side uploads** (`handleUpload`/`upload()` from `@vercel/blob/client`):
   the browser asks `/api/upload` for a short-lived client token, then uploads the
@@ -60,18 +62,19 @@ student (in lab) → BFM Client → Upload → select file from inbox → Files 
   10–50 MB `.gcode.3mf` slices upload fine. When the upload completes, Vercel Blob
   calls back into `/api/upload` (`onUploadCompleted`), which best-effort POSTs
   `{pathname, url, downloadUrl}` to the laptop's `/api/blob-webhook` (over the
-  Cloudflare Tunnel) so the laptop downloads the blob immediately — **no
-  polling**. This keeps the laptop within Vercel Blob's free Hobby operation
-  limits (a 10s poll loop would exhaust the advanced-ops quota; the webhook-driven
-  design does only one catch-up `list` on startup). If the tunnel is down when a
-  callback fires, the blob simply stays in Blob and the laptop grabs it via that
-  single catch-up `list` on next startup. No tunnel needed for the upload path
-  itself.
-- **Private Blob store.** `bambu-submissions` is a Private store, so blobs are not
-  readable via their plain URL. The laptop downloads each blob via the signed
-  `downloadUrl` (valid ≤ 7 days) and deletes it via the authenticated canonical
-  `url`. The `file_watcher` deletes each blob after processing, which keeps Blob
-  storage well under the 1 GB Hobby limit under normal operation.
+  tunnel) so the laptop downloads the blob immediately — **no polling**. This
+  keeps the laptop within Vercel Blob's free Hobby operation limits (a 10s poll
+  loop would exhaust the advanced-ops quota; the webhook-driven design does only
+  one catch-up `list` on startup). If the tunnel is down when a callback fires,
+  the blob simply stays in Blob and the laptop grabs it via that single catch-up
+  `list` on next startup. No tunnel needed for the upload path itself.
+- **Private Blob store.** `bambu-submissions` is a Private store, so blobs are
+  not readable via their plain URL. The laptop sends `Authorization: Bearer
+  <BLOB_READ_WRITE_TOKEN>` on every blob GET (and prefers the signed
+  `downloadUrl` when present), so both the signed URL and the plain-URL
+  fallback work for private stores. The `file_watcher` deletes each blob
+  after processing, which keeps Blob storage well under the 1 GB Hobby limit
+  under normal operation.
 - **The "into BFM" step is manual** (human clicks Upload + selects the file).
   This is the decided approach ("Pivot A") — it works today and needs no BFM
   reverse-engineering. Fully automating that last click is an *optional* future
@@ -134,12 +137,15 @@ declares `web.inbox_dir` as `C:\BambuSubmissions`, `main.py` passes it through,
 and `_process_blob` archives to `inbox_dir / sanitize(name) / renamed`. The
 README "Student (in the lab)" step and `web/README.md` already name the path.
 
-### What is deprecated / unused
+### What is deprecated / best-effort
 
 - `station/printer_uploader.py` — uploads to a **printer's local HTTP API**,
-  bypassing BFM. **Not used in the decided workflow.** Keep the file for
-  reference but do NOT call it from `file_watcher.py`. (The human performs the
-  upload via BFM's Upload button instead.)
+  bypassing BFM. **Not the primary path** (the human performs the upload via
+  BFM's Upload button). `file_watcher.py` still calls it as a **best-effort,
+  non-fatal** convenience: if the push fails (or no printer is available), the
+  daemon logs a warning but still archives the file to the inbox and deletes the
+  blob. So a printer-push failure never blocks the actual goal (file landing in
+  the inbox for the student to pick via BFM).
 - The web upload form's "target printer" dropdown (`web/components/UploadForm.tsx`,
   `web/lib/blob.ts`) is no longer a routing key — the human picks the printer in
   BFM. It can stay as optional metadata or be removed; it does not affect the
@@ -218,9 +224,11 @@ human label) that's ready for analysis or ML down the road.
    for state transitions.
 3. When a print starts (`RUNNING`), a new row is inserted into `print_dataset.db`.
 4. When a print ends (`FINISH` or `FAILED`), a popup appears asking
-   **"Did this print fail?"**
-5. You click YES or NO — the label is written to the database alongside the job
-   metadata.
+   **"How did this print turn out?"**
+5. You click **Print Succeeded** or **Print Failed** — the label (`0` =
+   succeeded, `1` = failed) is written to the database alongside the job
+   metadata. (The wording was changed from an inverted Yes/No "Did this
+   print fail?" prompt that was easy to misread.)
 
 ---
 
@@ -360,6 +368,19 @@ After pulling new code, just restart the daemon — there's nothing else to do.
 Don't delete `config.json`, `print_dataset.db`, or `makerlab.log`; those hold
 your local fleet config and collected data.
 
+If `git pull` reports "local changes to the following files would be
+overwritten by merge" (e.g. you edited `main.py`/`database.py` locally), the
+incoming commit contains the same fix — stash your local edits and pull:
+
+```cmd
+git stash
+git pull
+git stash drop
+```
+
+`config.json` and `print_dataset.db` are gitignored, so `git pull` never
+touches them — your local config and data always survive an update.
+
 ---
 
 ## Exporting the database
@@ -474,31 +495,168 @@ student starts the print from the printer when physically ready.
   downloadUrl}` and enqueues it for the file watcher (shared-secret auth).
 - **`station/file_watcher.py`** — **webhook-driven**. When the station's
   `/api/blob-webhook` endpoint is notified that a new submission landed in
-  Vercel Blob's `incoming/` prefix, it downloads the blob via the signed
-  `downloadUrl`, renames it to `<name>_<filename>.gcode.3mf`, and uploads it to
-  the chosen (or any idle) printer via `station/printer_uploader.py`. Each
-  submission is recorded in the `uploads` SQLite table. On startup it does one
-  catch-up `list` to grab anything uploaded while offline; an optional rare
-  fallback poll (`web.poll_interval_s`, default `0` = off) is a safety net —
-  keep it rare on the Hobby plan.
+  Vercel Blob's `incoming/` prefix, it downloads the blob (sending
+  `Authorization: Bearer <blob_token>` on the GET, and preferring the signed
+  `downloadUrl` when present — the store is Private, so the plain `url` needs
+  the Bearer header), renames it to `<name>_<filename>.gcode.3mf`, records it
+  in the `uploads` table, **archives it into the organized inbox**
+  (`C:\BambuSubmissions\<sanitized name>\<name>_<filename>.gcode.3mf` by
+  default; configurable via `web.inbox_dir`), and deletes the blob. The
+  optional printer push (`printer_uploader.upload_file`) is **best-effort and
+  non-fatal**: a push failure (or no available printer) logs a warning but
+  still archives the file and deletes the blob — the human performs the
+  actual upload via BFM. Does a single catch-up `list` on startup for
+  anything uploaded while offline; an optional rare fallback poll
+  (`web.poll_interval_s`, default `0` = off) is a safety net — keep it rare
+  on the Hobby plan.
 - **`station/printer_uploader.py`** — the only module that writes to a printer:
   the 3-step Bambu local HTTP upload flow (credentials → OSS upload → land
   file).
 
-### Setup (one-time)
+### Student file requirement (important)
 
-1. Create a Vercel Blob store and copy its read/write token into
-   `config.json` under `web.blob_token` and into `web/.env.local` (and the
-   Vercel project env vars) as `BLOB_READ_WRITE_TOKEN`.
-2. Generate a shared webhook secret (e.g. `openssl rand -hex 32`) and put it in
-   `config.json` under `web.webhook_secret` and in the Vercel project env vars
-   as `STATION_WEBHOOK_SECRET`. The two must match.
-3. Deploy `web/` to Vercel. Set `STATION_API_URL` to the tunnel hostname.
-4. Set up a Cloudflare Tunnel from the dedicated laptop to `localhost:8080`
-   (`station/TUNNEL.md`). Put the tunnel hostname in `config.json` under
-   `web.station_api_url`.
-5. Restart the daemon on the laptop — `main.py` automatically starts the API
-   server and the file watcher when the `web` section is present.
+Students **must upload a sliced `.gcode.3mf` file** — the bundled 3MF format
+Bambu Studio exports (a ZIP container with the G-code + plate metadata
+inside). A **plain `.3mf`** (a 3D model with no G-code) or a **plain `.gcode`**
+(text G-code) will be rejected by Bambu Farm Manager with a generic "file
+error" even though the laptop accepts and archives it. In Bambu Studio:
+**File → Export → Export plate sliced file as `.gcode.3mf`** (not "Export
+plate as 3MF" and not a plain `.gcode`). Tell students this on the upload
+form.
+
+> TODO (next): tighten `ALLOWED_EXT` in `web/lib/blob.ts` +
+> `web/app/api/upload/route.ts` to `.gcode.3mf` only, so the wrong format is
+> rejected at upload time with a clear error instead of failing silently at
+> BFM.
+
+### Setup (one-time, reproducible for any lab)
+
+This is the full end-to-end setup, in order. It splits into a **web side**
+(Vercel, done once) and a **laptop side** (the dedicated machine in the lab).
+
+#### A. Web side (Vercel) — once per deployment
+
+1. **Create a Vercel Blob store** named `bambu-submissions` with
+   **Private** access (access mode cannot be changed after creation — pick
+   Private). Note the **store ID** and the **`BLOB_READ_WRITE_TOKEN`** (the
+   Blob store's Settings → `.env.local` tab shows the token in plaintext).
+2. **Generate a shared webhook secret** once:
+   ```bash
+   openssl rand -hex 32
+   ```
+   Save it — you'll put the same value in both the Vercel project env vars
+   and the laptop's `config.json`.
+3. **Deploy `web/` to Vercel** from the `web/` directory:
+   ```bash
+   cd web
+   npx vercel --prod
+   ```
+4. **Set the Vercel project env vars** (Production + Preview) in the Vercel
+   dashboard:
+   - `BLOB_READ_WRITE_TOKEN` — from step 1.
+   - `BLOB_STORE_ID` — from step 1.
+   - `BLOB_WEBHOOK_PUBLIC_KEY` — from the Blob store settings (verifies the
+     `onUploadCompleted` callback signature).
+   - `STATION_WEBHOOK_SECRET` — from step 2 (must match the laptop).
+   - `STATION_API_URL` — the laptop's public tunnel URL (set in step B-5
+     after the tunnel is up; can be set later and redeployed).
+5. **Redeploy** (Production, "Use existing Build Cache" unchecked) so the
+   env vars take effect.
+
+#### B. Laptop side (the dedicated Windows machine in the lab)
+
+1. **Install Python 3.11+ and Git.** On Windows:
+   ```cmd
+   winget install Python.Python.3.11 Git.Git
+   ```
+2. **Clone the repo** and install dependencies:
+   ```cmd
+   git clone https://github.com/miguel200-collab/Bambu-FM-Print-Data.git C:\Bambu-FM-Print-Data
+   cd C:\Bambu-FM-Print-Data
+   python -m pip install -r requirements.txt
+   ```
+   Use `python -m pip` (not `pip`) so the packages land in the same
+   interpreter that runs `main.py`. Verify with:
+   ```cmd
+   python -c "import httpx, fastapi, uvicorn; print('ok')"
+   ```
+3. **Create `config.json`** from the template and fill in the `printers`
+   array (each printer's `name`, `ip`, `serial`, `access_code`) plus the
+   `web` section:
+   ```cmd
+   copy config.json.template config.json
+   ```
+   ```json
+   {
+     "printers": [ { "name", "ip", "serial", "access_code" } ],
+     "web": {
+       "blob_token":       "<BLOB_READ_WRITE_TOKEN from Vercel>",
+       "station_api_url":  "https://<laptop>.ts.net",
+       "webhook_secret":  "<openssl rand -hex 32 output, same as Vercel>",
+       "api_host":        "127.0.0.1",
+       "api_port":        8080,
+       "poll_interval_s": 0,
+       "inbox_dir":       "C:\\BambuSubmissions"
+     }
+   }
+   ```
+   `api_host` `127.0.0.1` = only the tunnel reaches the API from outside
+   (safer). `poll_interval_s` `0` = webhook-driven, no continuous polling
+   (do not change — continuous polling exhausts the Hobby Blob quota).
+4. **Create the inbox root:**
+   ```cmd
+   mkdir C:\BambuSubmissions
+   ```
+   (The daemon also auto-creates it on startup, but making it explicitly
+   avoids any permission surprise.)
+5. **Set up the tunnel — Tailscale Funnel (recommended, free, no domain).**
+   - Create a Tailscale account, install Tailscale on the laptop, and
+     `tailscale up`.
+   - Enable Funnel in the admin console: **Access controls → JSON editor →
+     "Add Funnel to policy"** (Funnel is ACL-gated; there's no toggle under
+     Settings/DNS).
+   - Test in the foreground: `tailscale funnel 8080` — it prints the public
+     URL (`https://<device-name>.<tailnet>.ts.net`).
+   - Make it persistent: `tailscale funnel --bg 8080` (registered with the
+     `tailscaled` Windows service; survives reboot).
+   - Copy that exact URL into `config.json` `web.station_api_url` **and**
+     into the Vercel env var `STATION_API_URL`, then **redeploy** Vercel.
+   - DNS propagation: the URL works from the tailnet immediately; public
+     DNS (Vercel's servers) may take a few minutes the first time.
+   - **Alternative:** Cloudflare Tunnel (`station/TUNNEL.md`) if you have a
+     domain.
+6. **Start the daemon:**
+   ```cmd
+   python main.py
+   ```
+   You should see all printers connect over MQTT, `Station API listening on
+   http://127.0.0.1:8080`, `Uvicorn running`, `GUI loop started`, and
+   `FileWatcher started (webhook-driven; fallback poll every 0s)`.
+7. **End-to-end test:** upload a real sliced `.gcode.3mf` from the Vercel
+   site. Within seconds the laptop should log
+   `Archived <renamed> (target <printer>) to C:\BambuSubmissions\<name>\<renamed>`
+   and the blob should disappear from the Vercel Blob dashboard's `incoming/`
+   folder. Then open BFM → Upload → pick the file from
+   `C:\BambuSubmissions\<name>\` → Create / Direct to Print.
+
+#### Keeping the daemon running
+
+`python main.py` is a **foreground process** — closing its cmd window kills
+it (the Tailscale Funnel survives as a Windows service, but the daemon does
+not). Options, in order of effort:
+
+- **Minimize the cmd window** (zero setup) — works until a reboot or close.
+- **`install_autostart.bat`** (already in the repo) — right-click → Run as
+  administrator. Registers a Task Scheduler job ("MakerLAB Daemon") that
+  launches `launcher.bat` at every login. Handles auto-start-at-login; the
+  launched window still needs to stay open (minimized). Commands:
+  - Start now: `schtasks /run /tn "MakerLAB Daemon"`
+  - Stop: `schtasks /end /tn "MakerLAB Daemon"`
+  - Remove: `schtasks /delete /tn "MakerLAB Daemon" /f`
+- **NSSM** (most robust) — wrap `python main.py` as a real Windows service
+  with [NSSM](https://nssm.cc/): no window, survives reboot, auto-restarts
+  on crash, starts before login. Recommended for a dedicated always-on
+  laptop.
 
 ### Data flow
 
@@ -506,7 +664,9 @@ student starts the print from the printer when physically ready.
 student → web (Vercel) → /api/upload (handleUpload: client token) → browser uploads direct to Vercel Blob (incoming/)
                                                                        ↓ Vercel Blob upload-completed callback → /api/upload (onUploadCompleted)
                                                                        ↓ /api/upload POSTs {pathname,url,downloadUrl} to station /api/blob-webhook (best-effort)
-station → file_watcher downloads blob via signed downloadUrl → printer_uploader.upload_file() → printer Files tab
+station → file_watcher downloads blob (Bearer auth on the GET; prefers signed downloadUrl) → archives <name>_<file>.gcode.3mf to C:\BambuSubmissions\<name>\ → deletes blob
+                                                                       ↓ (best-effort, non-fatal) printer_uploader.upload_file() → printer Files tab
+student (in lab) → BFM Client → Upload → select file from inbox → Files tab → Create / Direct to Print → printer (LAN)
 web (Vercel) → station /api/printers + /camera → printer (MQTT + snapshot)
 ```
 
