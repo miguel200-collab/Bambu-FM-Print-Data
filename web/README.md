@@ -4,7 +4,7 @@ A futuristic, Cornell Tech-themed Next.js site where students see live printer
 status + camera snapshots and submit sliced `.gcode.3mf` files. Submitted files
 land in Vercel Blob; the dedicated laptop is notified via a webhook (no polling)
 and drops each renamed file into an inbox folder on the laptop (see `../station/`
-and the "Project context" section in `../README.md`).
+and the Architecture section in `../README.md`).
 
 ## Setup
 
