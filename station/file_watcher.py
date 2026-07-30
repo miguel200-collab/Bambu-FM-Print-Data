@@ -240,14 +240,17 @@ class FileWatcher:
         return out
 
     def _download_blob(self, blob: dict, dest: Path) -> None:
-        # Private Blob store: `url` is not fetchable without auth; prefer the
-        # signed `downloadUrl` (valid up to 7 days). Fall back to `url` for
-        # public stores / older payloads.
+        # Private Blob store: the plain `url` is not fetchable without auth, and
+        # signed `downloadUrl`s expire (≤7 days). Send the Bearer token on every
+        # GET so both the signed `downloadUrl` (header is harmless) and the plain
+        # `url` fallback work for private stores. Mirrors the auth already used
+        # by `_list_pending_blobs` and `_delete_blob`.
         url = blob.get("downloadUrl") or blob.get("url")
         if not url:
             raise printer_uploader.UploadError("blob has no download url")
+        headers = {"authorization": f"Bearer {self._token}"}
         with httpx.Client(timeout=_TIMEOUT) as client:
-            with client.stream("GET", url) as resp:
+            with client.stream("GET", url, headers=headers) as resp:
                 resp.raise_for_status()
                 with dest.open("wb") as fh:
                     for chunk in resp.iter_bytes(chunk_size=_CHUNK):

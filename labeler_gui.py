@@ -80,7 +80,7 @@ class LabelPopup(tk.Toplevel):
         # ---- Question label ----
         question = tk.Label(
             self,
-            text="Did this print fail?",
+            text="How did this print turn out?",
             font=heading_font,
             bg=self._BG_DARK,
             fg=self._FG_LIGHT,
@@ -104,11 +104,11 @@ class LabelPopup(tk.Toplevel):
         btn_frame = tk.Frame(self, bg=self._BG_DARK, pady=PAD)
         btn_frame.pack(fill="x", padx=PAD)
 
-        # NO = success (green). highlightbackground is a macOS fallback since the
+        # Succeeded (green). highlightbackground is a macOS fallback since the
         # native Aqua theme ignores bg on tk.Button.
         btn_no = tk.Button(
             btn_frame,
-            text="NO — Print Succeeded",
+            text="Print Succeeded",
             font=btn_font,
             bg=self._GREEN,
             fg=self._GREEN_TXT,
@@ -123,10 +123,10 @@ class LabelPopup(tk.Toplevel):
         )
         btn_no.pack(side="left", expand=True, fill="x", padx=(0, 8))
 
-        # YES = failure (whiteish, dark text) — keeps the palette to black/white/green.
+        # Failed (whiteish, dark text) — keeps the palette to black/white/green.
         btn_yes = tk.Button(
             btn_frame,
-            text="YES — Print Failed",
+            text="Print Failed",
             font=btn_font,
             bg=self._WHITE_BTN,
             fg=self._DARK_TXT,
