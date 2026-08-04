@@ -23,7 +23,7 @@ export function UploadForm({ printers }: Props) {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) {
-      setStatus({ kind: "err", msg: "Please enter your name." });
+      setStatus({ kind: "err", msg: "Please enter your NetID." });
       return;
     }
     if (!file) {
@@ -60,14 +60,15 @@ export function UploadForm({ printers }: Props) {
   return (
     <form className="form" onSubmit={onSubmit}>
       <div className="field">
-        <label htmlFor="name">Your name</label>
+        <label htmlFor="name">NetID</label>
         <input
           id="name"
           type="text"
-          placeholder="Jane Doe"
+          placeholder="ab1234"
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
+        <span className="hint">Your Cornell NetID — used as your inbox folder name.</span>
       </div>
 
       <div className="field">

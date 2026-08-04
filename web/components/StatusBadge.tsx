@@ -4,20 +4,23 @@ interface Props {
 }
 
 export function StatusBadge({ state, connected }: Props) {
-  let cls = "badge ";
+  let cls = "tag ";
   let label = state;
 
   if (!connected && state !== "RUNNING" && state !== "PREPARE") {
-    cls += "badge-offline";
+    cls += "tag-offline";
     label = "OFFLINE";
   } else if (state === "RUNNING") {
-    cls += "badge-running";
+    cls += "tag-running";
+    label = "RUNNING";
   } else if (state === "PREPARE") {
-    cls += "badge-prepare";
+    cls += "tag-prepare";
+    label = "PREPARE";
   } else if (state === "FAILED") {
-    cls += "badge-failed";
+    cls += "tag-failed";
+    label = "FAILED";
   } else {
-    cls += "badge-idle";
+    cls += "tag-idle";
     label = label || "IDLE";
   }
 
