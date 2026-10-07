@@ -55,7 +55,8 @@ import httpx
 
 import database as db
 from mqtt_listener import PrinterMonitor
-from station import printer_uploader
+from station import gcode_features, printer_uploader
+from station.matching import sanitize_name
 
 log = logging.getLogger(__name__)
 
@@ -69,12 +70,8 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _sanitize(value: str) -> str:
-    """Make a string safe to embed in a filename / blob pathname."""
-    cleaned = "".join(
-        c if c.isalnum() or c in "-._" else "_" for c in value.strip()
-    )
-    return cleaned or "anon"
+# Shared with the offline backfill so both agree on a student's inbox folder.
+_sanitize = sanitize_name
 
 
 def _normalize_gcode_name(name: str) -> str:
@@ -351,6 +348,9 @@ class FileWatcher:
             log.info(
                 "Archived %s (target %s) to %s", renamed, printer_name, archive
             )
+            # Research data: extract slicer settings + design family. Strictly
+            # non-fatal — the archive and blob deletion above already happened.
+            self._record_features(upload_id, archive)
 
         except Exception as exc:
             log.error("Upload failed for %s: %s", pathname, exc)
@@ -371,6 +371,27 @@ class FileWatcher:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _record_features(upload_id: str, archive: Path) -> None:
+        """
+        Extract features from the archived file and attach them (plus a design
+        family) to the upload row. Never raises: a file that cannot be parsed
+        must not affect the submission pipeline. Identical files (same sha256)
+        reuse the stored extraction.
+        """
+        try:
+            sha256 = gcode_features.sha256_file(archive)
+            features = db.get_file_features(sha256)
+            if features is None:
+                try:
+                    features = gcode_features.extract_features(archive)
+                except gcode_features.FeatureError as exc:
+                    log.warning("Feature extraction: %s is not a readable 3MF: %s", archive.name, exc)
+                    features = gcode_features.failed_result(str(exc))
+            db.record_upload_features(upload_id, sha256, features)
+        except Exception as exc:  # noqa: BLE001 — see docstring
+            log.warning("Feature extraction failed for upload %s (non-fatal): %s", upload_id, exc)
 
     @staticmethod
     def _parse_pathname(pathname: str) -> tuple[str, str, str]:

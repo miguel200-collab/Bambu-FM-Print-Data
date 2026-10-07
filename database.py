@@ -21,12 +21,16 @@ era set with ``set_current_era`` (main.py reads it from config ``labels.era``);
 it defaults to 1 so nothing is ever counted as "clean" by accident.
 """
 
+import json
 import sqlite3
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from station import families
+from station.gcode_features import CURATED_COLUMNS, EXTRACTOR_VERSION
 from station.matching import JobMatch, parse_ts, pick_upload, is_calibration_job, normalize_netid
 
 log = logging.getLogger(__name__)
@@ -76,7 +80,43 @@ CREATE TABLE IF NOT EXISTS uploads (
     error_message       TEXT,
     received_at         TEXT,
     uploaded_at         TEXT,
-    era                 INTEGER
+    era                 INTEGER,
+    -- identity of the submitted file (filled by the feature pipeline)
+    file_sha256         TEXT,            -- exact same file
+    gcode_md5           TEXT,            -- same sliced toolpath
+    design_family_id    TEXT,            -- "same thing, tweaked" (per student)
+    attempt_index       INTEGER,         -- 1 = first upload of the family
+    config_diff         TEXT             -- JSON: settings changed vs. previous attempt
+);
+"""
+
+_CREATE_DESIGN_FAMILIES = """
+CREATE TABLE IF NOT EXISTS design_families (
+    family_id        TEXT PRIMARY KEY,
+    student_name     TEXT NOT NULL,      -- normalized NetID: families never span students
+    created_at       TEXT NOT NULL,
+    last_upload_at   TEXT NOT NULL,
+    fingerprint_json TEXT NOT NULL,      -- names/area/bbox/max_z of the LATEST upload
+    upload_count     INTEGER NOT NULL
+);
+"""
+
+
+def _create_file_features_sql() -> str:
+    # One row per distinct file (keyed by sha256); the promoted columns come from
+    # gcode_features.CURATED_COLUMNS, everything else lives in raw_json.
+    cols = ",\n    ".join(f"{name} {sql_type}" for name, sql_type in CURATED_COLUMNS.items())
+    return f"""
+CREATE TABLE IF NOT EXISTS file_features (
+    file_sha256        TEXT PRIMARY KEY,
+    gcode_md5          TEXT,
+    extractor_version  INTEGER NOT NULL,
+    extracted_at       TEXT NOT NULL,
+    is_sliced          INTEGER NOT NULL,
+    error              TEXT,
+    plate_count        INTEGER,
+    {cols},
+    raw_json           TEXT
 );
 """
 
@@ -89,7 +129,13 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     },
     "uploads": {
         "era": "INTEGER",
+        "file_sha256": "TEXT",
+        "gcode_md5": "TEXT",
+        "design_family_id": "TEXT",
+        "attempt_index": "INTEGER",
+        "config_diff": "TEXT",
     },
+    "file_features": dict(CURATED_COLUMNS),
 }
 
 # One-off backfills, run ONLY at the moment the column is first added, so they
@@ -130,6 +176,8 @@ def init_db() -> None:
     with _connect() as conn:
         conn.execute(_CREATE_PRINT_JOBS)
         conn.execute(_CREATE_UPLOADS)
+        conn.execute(_CREATE_DESIGN_FAMILIES)
+        conn.execute(_create_file_features_sql())
         _migrate(conn)
     log.info("Database initialised at %s", DB_PATH)
 
@@ -261,8 +309,12 @@ def create_upload(
     target_printer: Optional[str],
     received_at: str,
     upload_status: str = "pending",
+    era: Optional[int] = None,
 ) -> None:
-    """Insert a row for a file the station just pulled from Vercel Blob."""
+    """Insert a row for a file the station just pulled from Vercel Blob.
+
+    ``era`` defaults to the current era; the backfill passes 1 explicitly.
+    """
     sql = """
         INSERT OR IGNORE INTO uploads
             (upload_id, blob_key, student_name, original_filename,
@@ -273,7 +325,7 @@ def create_upload(
         conn.execute(sql, (
             upload_id, blob_key, student_name, original_filename,
             renamed_filename, target_printer, upload_status, received_at,
-            _current_era,
+            _current_era if era is None else era,
         ))
     log.info("Upload recorded: %s  blob=%s  file=%s", upload_id, blob_key, renamed_filename)
 
@@ -301,7 +353,8 @@ def list_recent_uploads(limit: int = 50) -> list[sqlite3.Row]:
     sql = """
         SELECT upload_id, blob_key, student_name, original_filename, renamed_filename,
                target_printer, printer_serial, upload_status, error_message,
-               received_at, uploaded_at, era
+               received_at, uploaded_at, era, file_sha256, gcode_md5,
+               design_family_id, attempt_index
         FROM uploads
         ORDER BY received_at DESC
         LIMIT ?
@@ -381,3 +434,161 @@ def list_jobs_for_netid(
             "match_confidence": match.confidence,
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# File features + design families (see station/gcode_features.py, families.py)
+# ---------------------------------------------------------------------------
+
+def get_file_features(file_sha256: str) -> Optional[dict[str, Any]]:
+    """
+    The stored extraction for a file, or None if it was never extracted (or was
+    extracted by an older extractor version and should be redone).
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT extractor_version, raw_json FROM file_features WHERE file_sha256 = ?",
+            (file_sha256,),
+        ).fetchone()
+    if row is None or row["extractor_version"] != EXTRACTOR_VERSION or not row["raw_json"]:
+        return None
+    return json.loads(row["raw_json"])
+
+
+def _save_file_features(conn: sqlite3.Connection, file_sha256: str, features: dict[str, Any]) -> None:
+    columns = list(CURATED_COLUMNS)
+    curated = features.get("curated") or {}
+    placeholders = ", ".join("?" for _ in columns)
+    conn.execute(
+        f"""INSERT OR REPLACE INTO file_features
+            (file_sha256, gcode_md5, extractor_version, extracted_at, is_sliced, error,
+             plate_count, {", ".join(columns)}, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, {placeholders}, ?)""",
+        (
+            file_sha256,
+            features.get("gcode_md5"),
+            features.get("extractor_version", EXTRACTOR_VERSION),
+            datetime.now(timezone.utc).isoformat(),
+            1 if features.get("is_sliced") else 0,
+            features.get("error"),
+            features.get("plate_count"),
+            *[curated.get(c) for c in columns],
+            json.dumps(features, default=str),
+        ),
+    )
+
+
+def _assign_family(
+    conn: sqlite3.Connection, upload: sqlite3.Row, features: dict[str, Any]
+) -> tuple[str, int, Optional[dict]]:
+    """Put an upload into the student's closest design family (or a new one)."""
+    student = normalize_netid(upload["student_name"])
+    received = parse_ts(upload["received_at"]) or datetime.now(timezone.utc)
+    fingerprint = families.fingerprint(features)
+
+    candidates = []
+    for row in conn.execute(
+        "SELECT family_id, fingerprint_json, last_upload_at FROM design_families WHERE student_name = ?",
+        (student,),
+    ):
+        last = parse_ts(row["last_upload_at"])
+        if last is not None:
+            candidates.append((row["family_id"], json.loads(row["fingerprint_json"]), last))
+
+    family_id = families.choose_family(fingerprint, received, candidates)
+    now_iso = received.isoformat()
+
+    if family_id is None:
+        family_id = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO design_families
+               (family_id, student_name, created_at, last_upload_at, fingerprint_json, upload_count)
+               VALUES (?, ?, ?, ?, ?, 1)""",
+            (family_id, student, now_iso, now_iso, json.dumps(fingerprint)),
+        )
+        return family_id, 1, None
+
+    previous = conn.execute(
+        """SELECT u.attempt_index AS attempt_index, ff.raw_json AS raw_json
+           FROM uploads u LEFT JOIN file_features ff ON ff.file_sha256 = u.file_sha256
+           WHERE u.design_family_id = ? AND u.upload_id != ?
+           ORDER BY u.attempt_index DESC, u.received_at DESC LIMIT 1""",
+        (family_id, upload["upload_id"]),
+    ).fetchone()
+    attempt = ((previous["attempt_index"] or 0) + 1) if previous else 2
+    diff: Optional[dict] = None
+    if previous is not None and previous["raw_json"]:
+        previous_config = json.loads(previous["raw_json"]).get("config") or {}
+        diff = families.config_diff(previous_config, features.get("config") or {})
+
+    conn.execute(
+        """UPDATE design_families
+           SET fingerprint_json = ?, upload_count = upload_count + 1,
+               last_upload_at = CASE WHEN last_upload_at < ? THEN ? ELSE last_upload_at END
+           WHERE family_id = ?""",
+        (json.dumps(fingerprint), now_iso, now_iso, family_id),
+    )
+    return family_id, attempt, diff
+
+
+def record_upload_features(
+    upload_id: str, file_sha256: str, features: dict[str, Any]
+) -> dict[str, Any]:
+    """
+    Attach an extraction to an upload: store the features (once per distinct
+    file), record the file's sha256 / gcode md5 on the upload, and assign it to a
+    design family. Idempotent: an upload that already has a family keeps it.
+
+    Returns ``{"design_family_id", "attempt_index", "config_diff"}``.
+    """
+    with _connect() as conn:
+        upload = conn.execute(
+            """SELECT upload_id, student_name, received_at, design_family_id,
+                      attempt_index, config_diff
+               FROM uploads WHERE upload_id = ?""",
+            (upload_id,),
+        ).fetchone()
+        if upload is None:
+            raise KeyError(f"unknown upload: {upload_id}")
+
+        _save_file_features(conn, file_sha256, features)
+
+        if upload["design_family_id"] is not None:        # already assigned
+            conn.execute(
+                "UPDATE uploads SET file_sha256 = ?, gcode_md5 = ? WHERE upload_id = ?",
+                (file_sha256, features.get("gcode_md5"), upload_id),
+            )
+            return {
+                "design_family_id": upload["design_family_id"],
+                "attempt_index": upload["attempt_index"],
+                "config_diff": json.loads(upload["config_diff"]) if upload["config_diff"] else None,
+            }
+
+        family_id: Optional[str] = None
+        attempt: Optional[int] = None
+        diff: Optional[dict] = None
+        if features.get("is_sliced") and not features.get("error"):
+            family_id, attempt, diff = _assign_family(conn, upload, features)
+
+        conn.execute(
+            """UPDATE uploads
+               SET file_sha256 = ?, gcode_md5 = ?, design_family_id = ?,
+                   attempt_index = ?, config_diff = ?
+               WHERE upload_id = ?""",
+            (
+                file_sha256, features.get("gcode_md5"), family_id, attempt,
+                json.dumps(diff) if diff is not None else None, upload_id,
+            ),
+        )
+    log.info("Upload %s: sha256=%s family=%s attempt=%s", upload_id, file_sha256[:12], family_id, attempt)
+    return {"design_family_id": family_id, "attempt_index": attempt, "config_diff": diff}
+
+
+def list_uploads_for_backfill() -> list[sqlite3.Row]:
+    """All archived uploads (oldest first) with whether features were recorded yet."""
+    with _connect() as conn:
+        return conn.execute(
+            """SELECT upload_id, student_name, renamed_filename, received_at, file_sha256
+               FROM uploads WHERE upload_status = 'done'
+               ORDER BY received_at ASC, upload_id ASC"""
+        ).fetchall()
