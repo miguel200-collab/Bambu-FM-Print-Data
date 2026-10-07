@@ -1,10 +1,11 @@
 # Bambu Farm Manager — Web (Vercel)
 
 A futuristic, Cornell Tech-themed Next.js site where students see live printer
-status + camera snapshots and submit sliced `.gcode.3mf` files. Submitted files
-land in Vercel Blob; the dedicated laptop is notified via a webhook (no polling)
-and drops each renamed file into an inbox folder on the laptop (see `../station/`
-and the Architecture section in `../README.md`).
+status + camera snapshots, submit sliced `.gcode.3mf` files, and tell the lab how
+their print turned out (**Label my print**). Submitted files land in Vercel Blob;
+the dedicated laptop is notified via a webhook (no polling) and drops each renamed
+file into an inbox folder on the laptop (see `../station/` and the Architecture
+section in `../README.md`).
 
 ## Setup
 
@@ -12,16 +13,25 @@ and the Architecture section in `../README.md`).
 2. `npm install`
 3. Copy `.env.example` to `.env.local` and fill in:
    - `STATION_API_URL` — the public URL of the station's FastAPI server
-     (exposed via a Cloudflare Tunnel; see `../station/TUNNEL.md`).
+     (exposed via Tailscale Funnel or a Cloudflare Tunnel; see `../station/TUNNEL.md`).
    - `STATION_WEBHOOK_SECRET` — shared secret sent in the `x-station-key` header
      when notifying the station's `/api/blob-webhook`. Must match
      `web.webhook_secret` in the laptop's `config.json`. Generate with
      `openssl rand -hex 32`.
    - `BLOB_READ_WRITE_TOKEN` — from your Vercel Blob store.
+   - Leave the email-reminder variables (`EMAIL_LABELING_ENABLED`, `LABEL_LINK_SECRET`,
+     `RESEND_API_KEY`, `EMAIL_FROM`, …) **unset**: that feature is built but disabled.
 4. `npm run dev` (local) or push to Vercel.
+5. `npm test` runs the unit tests (validators, signed links, API routes — the Vercel
+   SDK and `fetch` are mocked); `npm run build` type-checks everything.
 
 ## How submission works
 
+- **Only a sliced `.gcode.3mf` is accepted** (`lib/blob.ts`). The form rejects other
+  extensions, checks the ZIP signature (`PK\x03\x04`) before uploading, and the
+  `/api/upload` route re-validates the pathname server-side. A plain `.3mf` model
+  or `.gcode` is rejected with the Bambu Studio export hint (File → Export →
+  Export plate sliced file) — nothing is ever silently renamed.
 - The browser uses **client-side uploads** (`upload()` from `@vercel/blob/client`):
   it `POST`s to `/api/upload` (this app's route handler, via `handleUpload`) to get
   a short-lived client token, then uploads the file **directly to Vercel Blob** at
@@ -49,6 +59,24 @@ and the Architecture section in `../README.md`).
   **Create → Direct to Print** and picks a matching idle printer.
 - The "target printer" dropdown on the upload form is optional metadata only —
   the human picks the printer in BFM, not from the website.
+
+## How labeling works
+
+- `/label` (the **Label my print** page): the student enters their NetID, sees the
+  prints of the last 14 days that came from files they submitted, and taps
+  **Print succeeded** / **Print failed**. The one-sentence definition of "failure"
+  is shown on the page (`lib/labeling.ts`).
+- The browser only talks to this site's own routes: `GET /api/my-prints?netid=` and
+  `POST /api/label`. Those routes (server-side) attach the shared `x-station-key`
+  and call the laptop's `/api/my-prints` and `/api/label-webhook`, so the secret
+  never reaches a browser. `source` is always set by the server, never by the client.
+- The station checks that the print belongs to that NetID, has ended, and ended
+  within 14 days. Students may correct a label (the latest wins).
+- NetID entry is not authentication (accepted for v1).
+- **Email reminders (future, disabled):** `/api/notify-print-end` and the token mode
+  of `/label?t=…` / `/api/label` answer `501` unless `EMAIL_LABELING_ENABLED=true`.
+  Links are HMAC-signed, expire after 14 days, and only *open* the page — a button
+  press is still required to record a label.
 
 ## How status works
 
