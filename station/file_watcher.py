@@ -56,7 +56,7 @@ import httpx
 import database as db
 from mqtt_listener import PrinterMonitor
 from station import gcode_features, printer_uploader
-from station.matching import sanitize_name
+from station.matching import parse_ts, sanitize_name
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +64,10 @@ _BLOB_BASE = "https://blob.vercel-storage.com"
 _POLL_INTERVAL_S = 10.0
 _CHUNK = 5 * 1024 * 1024
 _TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=10.0)
+# A completed upload whose blob WAS deleted still suppresses a notification for the
+# same pathname for this long after it FINISHED (queue duplicates / list lag).
+# After that, the same pathname is a new upload.
+_DUPLICATE_WINDOW_S = 30.0
 
 
 def _now() -> str:
@@ -253,10 +257,11 @@ class FileWatcher:
                     for chunk in resp.iter_bytes(chunk_size=_CHUNK):
                         fh.write(chunk)
 
-    def _delete_blob(self, blob: dict) -> None:
+    def _delete_blob(self, blob: dict) -> bool:
+        """Delete the blob from Vercel. Returns True only if it is confirmed gone."""
         url = blob.get("url")
         if not url:
-            return
+            return False
         headers = {"authorization": f"Bearer {self._token}", "content-type": "application/json"}
         with httpx.Client(timeout=_TIMEOUT) as client:
             resp = client.request(
@@ -264,6 +269,22 @@ class FileWatcher:
             )
         if resp.status_code not in (200, 204):
             log.warning("Blob delete returned HTTP %d for %s", resp.status_code, url)
+            return False
+        return True
+
+    def _delete_blob_safely(self, upload_id: str, blob: dict) -> None:
+        """
+        Delete the blob and record the outcome. NEVER raises: by now the file is
+        safely archived, so a failed delete (network blip, HTTP error) only means
+        the blob lingers until a later pass — it must not turn a good submission
+        into a failed one.
+        """
+        try:
+            deleted = self._delete_blob(blob)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Blob delete failed for %s (non-fatal): %s", blob.get("pathname"), exc)
+            deleted = False
+        db.set_blob_deleted(upload_id, deleted)
 
     # ------------------------------------------------------------------
     # Per-blob processing
@@ -340,14 +361,9 @@ class FileWatcher:
                     target_serial,
                 )
 
-            db.mark_uploaded(
-                upload_id=upload_id,
-                printer_serial=printer_serial,
-                uploaded_at=_now(),
-                status="done",
-            )
-            self._delete_blob(blob)
-            # Archive the local copy into the per-student inbox subfolder.
+            # 1. Archive the local copy into the per-student inbox subfolder FIRST.
+            #    Only once the file is safely on disk may the blob be deleted:
+            #    the other order loses the submission if the archive step fails.
             student_folder = self._inbox / _sanitize(name)
             student_folder.mkdir(parents=True, exist_ok=True)
             archive = student_folder / renamed
@@ -355,8 +371,17 @@ class FileWatcher:
             log.info(
                 "Archived %s (target %s) to %s", renamed, printer_name, archive
             )
-            # Research data: extract slicer settings + design family. Strictly
-            # non-fatal — the archive and blob deletion above already happened.
+            db.mark_uploaded(
+                upload_id=upload_id,
+                printer_serial=printer_serial,
+                uploaded_at=_now(),
+                status="done",
+            )
+            # 2. Delete the blob (non-fatal; the outcome is recorded so a blob that
+            #    could not be deleted is not mistaken for a NEW upload later).
+            self._delete_blob_safely(upload_id, blob)
+            # 3. Research data: extract slicer settings + design family. Strictly
+            #    non-fatal — the archive above already happened.
             self._record_features(upload_id, archive)
 
         except Exception as exc:
@@ -434,14 +459,39 @@ class FileWatcher:
             name = parts[0] if parts else "anon"
             target = "any"
             filename = "submission.gcode.3mf"
-        return name or "anon", (target or "any"), (filename or "submission.gcode.3mf")
+        # The pathname arrives from a public upload endpoint whose server-side
+        # check only validates the extension, so never trust it: every part is
+        # sanitized before it is used to build a file path.
+        return (
+            _sanitize(name or "anon"),
+            _sanitize(target or "any"),
+            _sanitize(filename or "submission.gcode.3mf"),
+        )
 
     def _already_processed(self, blob_key: str) -> bool:
-        rows = db.list_recent_uploads(limit=500)
-        for row in rows:
-            if row["blob_key"] == blob_key and row["upload_status"] in ("done", "uploading"):
-                return True
-        return False
+        """
+        Is this notification for a blob we have already handled?
+
+        A pathname is NOT a unique identity: the blob is deleted after
+        processing, so a student who later re-exports the same file name (the
+        default in Bambu Studio) legitimately uploads a NEW object at the same
+        pathname. So a completed upload only counts as "the same blob" while
+
+          * the blob could not be deleted (it is the same object, still listed), or
+          * it finished moments ago (the delete may not have propagated, or the
+            webhook and the catch-up list both reported it).
+        """
+        row = db.latest_upload_for_blob(blob_key)
+        if row is None:
+            return False
+        if row["upload_status"] == "uploading":
+            return True
+        if not row["blob_deleted"]:
+            return True
+        finished = parse_ts(row["uploaded_at"]) or parse_ts(row["received_at"])
+        if finished is None:
+            return True
+        return (datetime.now(timezone.utc) - finished).total_seconds() < _DUPLICATE_WINDOW_S
 
     def _resolve_monitor(self, target_serial: str) -> Optional[PrinterMonitor]:
         monitors = list(self._get_monitors())

@@ -217,6 +217,12 @@ class PrinterMonitor:
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             log.debug("[%s] Unparseable message: %s", self._name, exc)
             return
+        if not isinstance(payload, dict):
+            # Valid JSON but not an object ([], null, "x", 1). Raising here would
+            # propagate out of paho's callback and could stop this printer's
+            # network loop, so drop it.
+            log.debug("[%s] Ignoring non-object message.", self._name)
+            return
 
         print_data = payload.get("print")
         if not isinstance(print_data, dict):
@@ -266,7 +272,14 @@ class PrinterMonitor:
         entering_active = (
             new_state in _ACTIVE_STATES and self._last_state not in _ACTIVE_STATES
         )
-        if entering_active:
+        # PAUSE -> RUNNING resumes the SAME print. Without this, every pause
+        # created a second job row and orphaned the first (never ended/labeled).
+        # Only a job we are actually tracking can be resumed; RUNNING -> IDLE ->
+        # RUNNING (no PAUSE) is still a new print.
+        resuming = self._last_state == "PAUSE" and self._current_job_id is not None
+        if resuming and new_state in _ACTIVE_STATES:
+            log.info("[%s] Print resumed after pause (job %s).", self._name, self._current_job_id)
+        elif entering_active:
             self._on_print_start()
 
         elif new_state in _TERMINAL_STATES:

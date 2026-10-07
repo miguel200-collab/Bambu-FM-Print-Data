@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS uploads (
     gcode_md5           TEXT,            -- same sliced toolpath
     design_family_id    TEXT,            -- "same thing, tweaked" (per student)
     attempt_index       INTEGER,         -- 1 = first upload of the family
-    config_diff         TEXT             -- JSON: settings changed vs. previous attempt
+    config_diff         TEXT,            -- JSON: settings changed vs. previous attempt
+    blob_deleted        INTEGER          -- 1 once the Vercel blob was deleted after archiving
 );
 """
 
@@ -134,6 +135,7 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "design_family_id": "TEXT",
         "attempt_index": "INTEGER",
         "config_diff": "TEXT",
+        "blob_deleted": "INTEGER",
     },
     "file_features": dict(CURATED_COLUMNS),
 }
@@ -145,6 +147,10 @@ _BACKFILLS: dict[tuple[str, str], str] = {
         "UPDATE print_jobs SET label_source = 'popup' WHERE user_label IS NOT NULL",
     ("print_jobs", "era"): "UPDATE print_jobs SET era = 1",
     ("uploads", "era"): "UPDATE uploads SET era = 1",
+    # Every upload archived before this column existed had its blob deleted (a
+    # failed delete was never recorded), so treat them as deleted: otherwise a
+    # student re-uploading an old filename would be mistaken for a duplicate.
+    ("uploads", "blob_deleted"): "UPDATE uploads SET blob_deleted = 1 WHERE upload_status = 'done'",
 }
 
 
@@ -348,13 +354,34 @@ def mark_uploaded(
     log.info("Upload %s marked %s on %s", upload_id, status, printer_serial or "n/a")
 
 
+def latest_upload_for_blob(blob_key: str) -> Optional[sqlite3.Row]:
+    """Most recent in-flight or archived upload row for a blob pathname, or None."""
+    with _connect() as conn:
+        return conn.execute(
+            """SELECT upload_id, upload_status, received_at, uploaded_at, blob_deleted
+               FROM uploads
+               WHERE blob_key = ? AND upload_status IN ('done', 'uploading')
+               ORDER BY received_at DESC LIMIT 1""",
+            (blob_key,),
+        ).fetchone()
+
+
+def set_blob_deleted(upload_id: str, deleted: bool) -> None:
+    """Record whether the Vercel blob was deleted after the file was archived."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE uploads SET blob_deleted = ? WHERE upload_id = ?",
+            (1 if deleted else 0, upload_id),
+        )
+
+
 def list_recent_uploads(limit: int = 50) -> list[sqlite3.Row]:
     """Return the most recent upload rows (for a future station UI / log view)."""
     sql = """
         SELECT upload_id, blob_key, student_name, original_filename, renamed_filename,
                target_printer, printer_serial, upload_status, error_message,
                received_at, uploaded_at, era, file_sha256, gcode_md5,
-               design_family_id, attempt_index
+               design_family_id, attempt_index, blob_deleted
         FROM uploads
         ORDER BY received_at DESC
         LIMIT ?

@@ -79,10 +79,15 @@ def sanitize_name(value: str) -> str:
     """
     Make a string safe to use as a file/folder name: keep letters, digits and
     ``-._``, replace everything else with ``_`` ("anon" if nothing is left).
-    The inbox folder for a student is ``sanitize_name(student_name)``.
+    The inbox folder for a student is ``sanitize_name(student_name)``. Names made
+    only of dots become "anon" so they can never traverse out of the inbox.
     """
     cleaned = "".join(c if c.isalnum() or c in "-._" else "_" for c in (value or "").strip())
-    return cleaned or "anon"
+    # "", ".", ".." and "..." are path components, not names: ".." would make the
+    # inbox folder the inbox's PARENT (and Windows silently drops trailing dots).
+    if not cleaned.strip("."):
+        return "anon"
+    return cleaned
 
 
 def is_calibration_job(name: Optional[str]) -> bool:

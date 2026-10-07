@@ -274,6 +274,32 @@ def _run_event_loop(
 
 
 # ---------------------------------------------------------------------------
+# Shutdown
+# ---------------------------------------------------------------------------
+
+def _install_signal_handlers(stop_event: threading.Event) -> None:
+    """
+    Make Ctrl+C / termination request a clean stop, however the process started.
+
+    Relying on Python's default KeyboardInterrupt is fragile: a process started as
+    a background job inherits "ignore SIGINT" from the shell, and Python then never
+    installs its handler, so Ctrl+C silently does nothing. Setting the handlers
+    explicitly makes shutdown deterministic. (SIGBREAK is Ctrl+Break on Windows.)
+    """
+    def request_stop(signum, frame) -> None:  # noqa: ARG001
+        stop_event.set()
+
+    for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, request_stop)
+        except (ValueError, OSError):  # pragma: no cover — not the main thread / unsupported
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -338,10 +364,7 @@ def main() -> None:
     services = _start_station_services(monitors, full_config)
 
     stop_event = threading.Event()
-    try:
-        signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
-    except (ValueError, OSError):  # pragma: no cover — not in the main thread / unsupported
-        pass
+    _install_signal_handlers(stop_event)
 
     log.info("Daemon running (headless). Waiting for print events …")
     try:
@@ -357,6 +380,8 @@ def main() -> None:
     except KeyboardInterrupt:
         log.info("Interrupted by user.")
     finally:
+        if stop_event.is_set():
+            log.info("Stop requested — shutting down.")
         stop_event.set()
         for monitor in monitors:
             monitor.stop()

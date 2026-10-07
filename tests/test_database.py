@@ -238,3 +238,34 @@ def test_list_jobs_for_netid_newest_first_and_shows_label(tmp_db):
     assert [j["job_id"] for j in jobs] == ["second", "first"]
     assert jobs[1]["user_label"] == 1 and jobs[1]["label_source"] == "web"
     assert jobs[0]["user_label"] is None
+
+
+def test_legacy_done_uploads_are_backfilled_as_blob_deleted(tmp_path, monkeypatch):
+    """Rows archived before blob_deleted existed must not look like undeleted (duplicate) blobs."""
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE uploads (upload_id TEXT PRIMARY KEY, blob_key TEXT NOT NULL, student_name TEXT,"
+                 " original_filename TEXT, renamed_filename TEXT, target_printer TEXT, printer_serial TEXT,"
+                 " upload_status TEXT NOT NULL, error_message TEXT, received_at TEXT, uploaded_at TEXT)")
+    conn.execute("INSERT INTO uploads (upload_id, blob_key, upload_status) VALUES ('done1','incoming/a','done')")
+    conn.execute("INSERT INTO uploads (upload_id, blob_key, upload_status) VALUES ('fail1','incoming/b','failed')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(db, "DB_PATH", path)
+    monkeypatch.setattr(db, "_current_era", 1)
+    db.init_db()
+    assert db.latest_upload_for_blob("incoming/a")["blob_deleted"] == 1
+    assert db.latest_upload_for_blob("incoming/b") is None          # failed uploads are retryable
+
+
+def test_latest_upload_for_blob_picks_the_newest_and_ignores_failures(tmp_db):
+    db.create_upload("u1", "incoming/x", "ab123", "x", "ab123_x.gcode.3mf", "any", "2026-10-01T10:00:00+00:00")
+    db.mark_uploaded("u1", None, "2026-10-01T10:00:05+00:00", status="done")
+    db.create_upload("u2", "incoming/x", "ab123", "x", "ab123_x.gcode.3mf", "any", "2026-10-02T10:00:00+00:00")
+    db.mark_uploaded("u2", None, "2026-10-02T10:00:05+00:00", status="failed", error_message="e")
+    assert db.latest_upload_for_blob("incoming/x")["upload_id"] == "u1"
+    assert db.latest_upload_for_blob("incoming/none") is None
+    db.set_blob_deleted("u1", True)
+    assert db.latest_upload_for_blob("incoming/x")["blob_deleted"] == 1
+    db.set_blob_deleted("u1", False)
+    assert db.latest_upload_for_blob("incoming/x")["blob_deleted"] == 0
