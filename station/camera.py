@@ -51,23 +51,29 @@ def fetch_snapshot(
         candidates.append(camera_url)
     candidates.append(f"https://{printer_ip}/snapshot/recent_request")
 
+    log.info(
+        "Fetching camera for %s (ipcam_url=%s, candidates=%d)",
+        printer_ip, camera_url or "none", len(candidates),
+    )
+
     with httpx.Client(verify=_SSL_CTX, timeout=_TIMEOUT, auth=auth) as client:
         for url in candidates:
             try:
                 resp = client.get(url)
             except httpx.HTTPError as exc:
-                log.debug("camera fetch failed for %s: %s", url, exc)
+                log.warning("camera fetch failed for %s: %s", url, exc)
                 continue
             if resp.status_code != 200:
-                log.debug("camera %s returned HTTP %d", url, resp.status_code)
+                log.warning("camera %s returned HTTP %d (body[:120]=%r)", url, resp.status_code, resp.text[:120])
                 continue
             ctype = resp.headers.get("content-type", "")
             if "image" not in ctype and "jpeg" not in ctype and "octet-stream" not in ctype:
-                log.debug("camera %s returned non-image content-type %s", url, ctype)
+                log.warning("camera %s returned non-image content-type %r (len=%d)", url, ctype, len(resp.content))
                 continue
+            log.info("camera OK: %s (%s, %d bytes)", url, ctype, len(resp.content))
             return resp.content
 
-    log.debug("No reachable camera for printer %s", printer_ip)
+    log.warning("No reachable camera for printer %s (tried %d URL(s))", printer_ip, len(candidates))
     return None
 
 

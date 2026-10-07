@@ -52,3 +52,27 @@ def test_match_none():
 
 def test_calibration_never_matches():
     assert match_confidence("auto_hms_check_for_user.gcode", "auto_hms_check_for_user.gcode.3mf") == NONE
+
+
+# --------------------------------------------------------------------------- netid parity
+
+def test_normalize_netid_matches_the_shared_fixture():
+    """The same cases are asserted against the TypeScript twin in web/lib/labeling.test.ts."""
+    import json
+    from pathlib import Path
+    from station.matching import normalize_netid
+
+    cases = json.loads((Path(__file__).parent / "fixtures" / "netid_cases.json").read_text(encoding="utf-8"))["cases"]
+    assert len(cases) >= 10
+    for raw, expected in cases:
+        assert normalize_netid(raw) == (expected or ""), raw
+    assert normalize_netid(None) == ""
+
+
+def test_sanitize_name():
+    from station.matching import sanitize_name
+    assert sanitize_name("Miguel Ramirez") == "Miguel_Ramirez"
+    assert sanitize_name("ab123") == "ab123"
+    assert sanitize_name("a/b\\c") == "a_b_c"
+    assert sanitize_name("") == "anon"
+    assert sanitize_name(None) == "anon"

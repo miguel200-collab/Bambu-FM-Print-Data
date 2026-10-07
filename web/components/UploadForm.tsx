@@ -3,7 +3,12 @@
 import { useState } from "react";
 import { upload } from "@vercel/blob/client";
 import type { PrinterSnapshot } from "@/lib/station";
-import { buildPathname } from "@/lib/blob";
+import {
+  buildPathname,
+  EXPORT_HINT,
+  hasZipSignature,
+  isAllowedFilename,
+} from "@/lib/blob";
 
 interface Props {
   printers: PrinterSnapshot[];
@@ -30,6 +35,23 @@ export function UploadForm({ printers }: Props) {
       setStatus({ kind: "err", msg: "Please choose a .gcode.3mf file." });
       return;
     }
+    if (!isAllowedFilename(file.name)) {
+      setStatus({
+        kind: "err",
+        msg: `"${file.name}" is not a .gcode.3mf. A plain .3mf model or .gcode file will not print. ${EXPORT_HINT}`,
+      });
+      return;
+    }
+    // A real .gcode.3mf is a ZIP package. Catches a file that was merely
+    // renamed to end in .gcode.3mf before it wastes an upload.
+    const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+    if (!hasZipSignature(head)) {
+      setStatus({
+        kind: "err",
+        msg: `"${file.name}" does not look like a sliced Bambu Studio export (it is not a 3MF package). ${EXPORT_HINT}`,
+      });
+      return;
+    }
     setBusy(true);
     setProgress(0);
     setStatus({ kind: null, msg: "" });
@@ -44,7 +66,7 @@ export function UploadForm({ printers }: Props) {
       });
       setStatus({
         kind: "ok",
-        msg: `Submitted! The station will upload "${file.name}" to the printer shortly.`,
+        msg: `Archived "${file.name}" to the lab inbox. Open Bambu Farm Manager on the laptop and upload it to a printer from there.`,
       });
       setFile(null);
       setProgress(null);
@@ -75,11 +97,15 @@ export function UploadForm({ printers }: Props) {
         <label htmlFor="target">Target printer</label>
         <select id="target" value={target} onChange={(e) => setTarget(e.target.value)}>
           <option value="any">Any free printer</option>
-          {printers.map((p) => (
-            <option key={p.serial} value={p.serial}>
-              {p.name}
-            </option>
-          ))}
+          {printers.map((p) => {
+            const state = (p.state || (p.connected ? "IDLE" : "OFFLINE")).toUpperCase();
+            const label = p.connected ? `${p.name} — ${state}` : `${p.name} — OFFLINE`;
+            return (
+              <option key={p.serial} value={p.serial}>
+                {label}
+              </option>
+            );
+          })}
         </select>
       </div>
 
@@ -88,9 +114,10 @@ export function UploadForm({ printers }: Props) {
         <input
           id="file"
           type="file"
-          accept=".3mf,.gcode,.gcode.3mf,.3mf.gcode"
+          accept=".3mf"
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
         />
+        <span className="hint">{EXPORT_HINT}</span>
       </div>
 
       <button className="btn" type="submit" disabled={busy}>
@@ -105,7 +132,19 @@ export function UploadForm({ printers }: Props) {
       )}
 
       {status.kind && (
-        <div className={`form-msg ${status.kind}`}>{status.msg}</div>
+        <div className={`form-msg ${status.kind}`}>
+          {status.msg}
+          {status.kind === "ok" && (
+            <>
+              {" "}
+              When your print finishes,{" "}
+              <a href="/label" style={{ textDecoration: "underline" }}>
+                tell us how it turned out
+              </a>
+              .
+            </>
+          )}
+        </div>
       )}
     </form>
   );

@@ -302,6 +302,13 @@ class FileWatcher:
 
         try:
             self._download_blob(blob, local_path)
+            if not self._has_zip_signature(local_path):
+                # Still archived: this is a warning, not a failure. Bambu Farm
+                # Manager will reject the file ("file error") — see AGENTS.md.
+                log.warning(
+                    "%s is not a ZIP/3MF package (no 'PK' header): Bambu Farm Manager "
+                    "will likely reject it. Archiving anyway.", renamed,
+                )
 
             monitor = self._resolve_monitor(target_serial)
             printer_serial = monitor.serial if monitor else None
@@ -373,6 +380,15 @@ class FileWatcher:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _has_zip_signature(path: Path) -> bool:
+        """A real .gcode.3mf is a ZIP package and starts with b'PK\\x03\\x04'."""
+        try:
+            with path.open("rb") as fh:
+                return fh.read(4) == b"PK\x03\x04"
+        except OSError:
+            return False
+
+    @staticmethod
     def _record_features(upload_id: str, archive: Path) -> None:
         """
         Extract features from the archived file and attach them (plus a design
@@ -390,6 +406,11 @@ class FileWatcher:
                     log.warning("Feature extraction: %s is not a readable 3MF: %s", archive.name, exc)
                     features = gcode_features.failed_result(str(exc))
             db.record_upload_features(upload_id, sha256, features)
+            if not features.get("is_sliced") and not features.get("error"):
+                log.warning(
+                    "%s contains no G-code (a plain .3mf model?): Bambu Farm Manager "
+                    "will reject it. Upload %s is recorded as not sliced.", archive.name, upload_id,
+                )
         except Exception as exc:  # noqa: BLE001 — see docstring
             log.warning("Feature extraction failed for upload %s (non-fatal): %s", upload_id, exc)
 

@@ -169,3 +169,46 @@ def test_download_failure_marks_failed_keeps_blob_and_records_no_features(harnes
     assert harness.deleted == []
     assert not (harness.inbox / "ab123").exists()
     assert row["file_sha256"] is None
+
+
+# --------------------------------------------------------------------------- ZIP / sliced checks (M4)
+
+def test_zip_signature_check(tmp_path):
+    ok = tmp_path / "ok"
+    ok.write_bytes(b"PK\x03\x04rest")
+    bad = tmp_path / "bad"
+    bad.write_bytes(b"G28\nG1 X1")
+    short = tmp_path / "short"
+    short.write_bytes(b"PK")
+    f = fw.FileWatcher._has_zip_signature
+    assert f(ok) and not f(bad) and not f(short)
+    assert not f(tmp_path / "missing")
+
+
+def test_non_zip_upload_logs_a_warning_but_is_still_archived(harness, caplog):
+    harness.payload = b"; just gcode text\nG1 X1\n"
+    with caplog.at_level("WARNING", logger="station.file_watcher"):
+        harness.watcher._process_blob(blob(filename="fake.gcode.3mf"))
+    assert "not a ZIP/3MF package" in caplog.text
+    assert (harness.inbox / "ab123" / "ab123_fake.gcode.3mf").exists()   # warning, not failure
+    assert harness.deleted == [blob(filename="fake.gcode.3mf")]
+    assert upload_row()["upload_status"] == "done"
+
+
+def test_valid_zip_has_no_signature_warning(harness, caplog):
+    harness.payload = good_3mf_bytes(harness.tmp_path)
+    with caplog.at_level("WARNING", logger="station.file_watcher"):
+        harness.watcher._process_blob(blob())
+    assert "not a ZIP/3MF package" not in caplog.text
+    assert "contains no G-code" not in caplog.text
+
+
+def test_plain_3mf_model_warns_that_it_has_no_gcode(harness, caplog):
+    """The exact cause of the Jul-30 BFM 'file error': a model renamed to .gcode.3mf."""
+    harness.payload = good_3mf_bytes(harness.tmp_path, sliced=False)
+    with caplog.at_level("WARNING", logger="station.file_watcher"):
+        harness.watcher._process_blob(blob(filename="model.gcode.3mf"))
+    assert "contains no G-code" in caplog.text
+    assert upload_row()["upload_status"] == "done"
+    assert upload_row()["design_family_id"] is None
+    assert sqlite3.connect(db.DB_PATH).execute("SELECT is_sliced FROM file_features").fetchone()[0] == 0

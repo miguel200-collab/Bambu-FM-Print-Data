@@ -1,0 +1,18 @@
+{
+  "_comment": "Shared by pytest (station/matching.py normalize_netid) and vitest (web/lib/labeling.ts normalizeNetId). Both MUST agree. [input, expected]; expected null/empty = unusable.",
+  "cases": [
+    ["ab123", "ab123"],
+    ["AB123", "ab123"],
+    ["  ab123  ", "ab123"],
+    ["ab 123", "ab_123"],
+    ["ab   123", "ab_123"],
+    ["ab/../123", "ab_.._123"],
+    ["__x__", "x"],
+    ["a-b.c_d", "a-b.c_d"],
+    ["\u00dcn\u00efcode", "n_code"],
+    ["", ""],
+    ["   ", ""],
+    ["!!!", ""],
+    ["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]
+  ]
+}

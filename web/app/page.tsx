@@ -1,7 +1,8 @@
-import { PrinterCard } from "@/components/PrinterCard";
 import { UploadForm } from "@/components/UploadForm";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { fetchPrinters, cameraUrl, type PrinterSnapshot } from "@/lib/station";
+import { PrinterGrid } from "@/components/PrinterGrid";
+import { ConnectionPill } from "@/components/ConnectionPill";
+import { fetchPrinters, type PrinterSnapshot } from "@/lib/station";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -16,8 +17,9 @@ async function loadPrinters(): Promise<PrinterSnapshot[]> {
 
 export default async function Page() {
   const printers = await loadPrinters();
-  const connectedCount = printers.filter((p) => p.connected).length;
-  const online = printers.length > 0;
+  // Server-side read of the station URL; passed to the client grid so it can
+  // build camera <img> srcs without needing NEXT_PUBLIC_STATION_API_URL.
+  const stationApiUrl = process.env.STATION_API_URL ?? "";
 
   return (
     <>
@@ -30,6 +32,7 @@ export default async function Page() {
           <nav className="nav">
             <a href="#printers" className="active">Printers</a>
             <a href="#submit">Submit</a>
+            <a href="/label">Label</a>
             <a href="#about">About</a>
           </nav>
           <div className="topbar-right">
@@ -40,12 +43,7 @@ export default async function Page() {
 
       <main className="page">
         <div className="subhead">
-          <span className="live">
-            <span className={`dot${online ? "" : " off"}`} />
-            {online
-              ? `${connectedCount}/${printers.length} printers connected`
-              : "Station offline"}
-          </span>
+          <ConnectionPill initialPrinters={printers} />
           <span className="sep">//</span>
           <span>Bambu Farm Manager</span>
           <span className="sep">//</span>
@@ -63,34 +61,7 @@ export default async function Page() {
           </p>
         </section>
 
-        <section id="printers" className="section">
-          <div className="section-head">
-            <div>
-              <span className="section-index mono">[ 01 ]</span>
-              <span className="section-title">Printers</span>
-            </div>
-            <span className="section-meta">
-              {online ? `${connectedCount} live` : "offline"}
-            </span>
-          </div>
-
-          {online ? (
-            <div className="grid">
-              {printers.map((p) => (
-                <PrinterCard
-                  key={p.serial}
-                  printer={p}
-                  cameraSrc={cameraUrl(p.serial)}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="center-note">
-              The station is not reachable right now. Printer status will appear
-              here once the dedicated laptop is online.
-            </div>
-          )}
-        </section>
+        <PrinterGrid initialPrinters={printers} stationApiUrl={stationApiUrl} />
 
         <section id="submit" className="section form-section">
           <div className="section-head">

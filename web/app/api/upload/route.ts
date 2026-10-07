@@ -14,25 +14,11 @@
 
 import { NextResponse } from "next/server";
 import { handleUpload } from "@vercel/blob/client";
+import { EXPORT_HINT, isAllowedFilename, parsePathname } from "@/lib/blob";
 
 export const runtime = "nodejs";
 
-const ALLOWED_EXT = [".gcode.3mf", ".3mf.gcode", ".3mf", ".gcode"];
 const MAX_SIZE = 250 * 1024 * 1024; // 250 MB cap
-
-function isAllowedFilename(name: string): boolean {
-  const lower = name.toLowerCase();
-  return ALLOWED_EXT.some((ext) => lower.endsWith(ext));
-}
-
-// Parse 'incoming/<name>__<targetSerial>__<originalFilename>' just enough to
-// validate the student name and the file extension server-side.
-function parsePathname(pathname: string): { name: string; file: string } | null {
-  const body = pathname.startsWith("incoming/") ? pathname.slice("incoming/".length) : pathname;
-  const parts = body.split("__");
-  if (parts.length < 2) return null;
-  return { name: parts[0], file: parts[parts.length - 1] };
-}
 
 async function notifyStation(pathname: string, url: string, downloadUrl?: string): Promise<void> {
   const stationApiUrl = process.env.STATION_API_URL;
@@ -77,7 +63,7 @@ export async function POST(req: Request) {
           throw new Error("Name is required.");
         }
         if (!isAllowedFilename(parsed.file)) {
-          throw new Error("File must be a .gcode.3mf slice.");
+          throw new Error(`File must be a sliced .gcode.3mf. ${EXPORT_HINT}`);
         }
         return {
           maximumSizeInBytes: MAX_SIZE,
