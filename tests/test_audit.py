@@ -96,7 +96,7 @@ def test_match_rate(tmp_db):
     assert m["upload_match_rate"] == pytest.approx(0.5)
     assert m["jobs"] == 2
     assert m["jobs_with_an_upload"] == 1
-    assert m["pairs_by_level"] == {"exact": 1}
+    assert m["jobs_by_confidence"] == {"exact": 1, "none": 1}
 
 
 def test_match_ignores_jobs_before_the_upload(tmp_db):

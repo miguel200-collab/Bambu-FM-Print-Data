@@ -79,7 +79,7 @@ class PrinterMonitor:
         self._current_job_id: Optional[str] = None
         # Whether we've recorded the printer's initial state. The first state we
         # see is just a baseline — we must NOT treat a pre-existing FINISH (left
-        # over from a previous print) as a fresh completion and pop up a dialog.
+        # over from a previous print) as a fresh completion and emit an end event.
         self._baselined: bool = False
 
         # Latest telemetry snapshot (updated on every incoming message)
@@ -240,7 +240,7 @@ class PrinterMonitor:
 
         # First state seen for this printer: record a baseline. Only treat it as
         # a print start if the printer is already actively printing; an existing
-        # FINISH/FAILED/IDLE is just leftover state and must not trigger a popup.
+        # FINISH/FAILED/IDLE is just leftover state and must not trigger an end event.
         if not self._baselined:
             self._baselined = True
             self._last_state = new_state
@@ -274,7 +274,7 @@ class PrinterMonitor:
                 self._on_print_end(new_state)
             else:
                 # Terminal state with no job we were tracking — this is leftover
-                # state from before we observed a start, so ignore it (no popup).
+                # state from before we observed a start, so ignore it (no end event).
                 log.info(
                     "[%s] Terminal state %s with no tracked job — ignoring.", self._name, new_state
                 )

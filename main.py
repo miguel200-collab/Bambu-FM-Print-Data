@@ -1,6 +1,11 @@
 """
 main.py — Entry point for the Bambu Farm Manager Print Failure Data Engine.
 
+Headless daemon: it has no window. It watches the printers over MQTT, records
+every print job to SQLite, serves the status/label API, and archives student
+submissions. Print outcomes are labeled by students on the website's
+"Label my print" page (see station/api_server.py), not in a popup.
+
 Normal mode (connects to real printers on the LAN):
     python main.py
     pythonw main.py        # same, but with no console window (Windows)
@@ -9,7 +14,8 @@ Mock mode (offline testing, no printers required):
     python main.py --mock
 
     Skips all MQTT connections and injects a fake FINISH event after 3 seconds
-    so the full database → popup → label flow can be tested without printers.
+    so the full database -> event loop flow can be tested without printers.
+    Mock mode writes to print_dataset_mock.db, never the real dataset.
 """
 
 import argparse
@@ -17,17 +23,15 @@ import json
 import logging
 import logging.handlers
 import queue
+import signal
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
-
-import tkinter as tk
+from typing import Callable, Optional
 
 import database as db
-from labeler_gui import LabelPopup
 from mqtt_listener import PrintEndEvent, PrinterMonitor
 
 # ---------------------------------------------------------------------------
@@ -37,13 +41,10 @@ from mqtt_listener import PrintEndEvent, PrinterMonitor
 _BASE_DIR   = Path(__file__).parent
 _LOG_PATH   = _BASE_DIR / "makerlab.log"
 _CONFIG_PATH = _BASE_DIR / "config.json"
+_MOCK_DB_PATH = _BASE_DIR / "print_dataset_mock.db"
 
 # How often the heartbeat line is written to the log (5 minutes).
-_HEARTBEAT_MS = 5 * 60 * 1000
-
-# Where the file_watcher stages downloaded submissions.
-_INCOMING_DIR = _BASE_DIR / "incoming"
-_PROCESSED_DIR = _BASE_DIR / "processed"
+_HEARTBEAT_S = 5 * 60
 
 
 # ---------------------------------------------------------------------------
@@ -96,17 +97,22 @@ def _start_station_services(
     full_config: dict,
 ) -> list:
     """
-    Start the FastAPI status/camera server and the Vercel Blob file watcher.
+    Start the FastAPI status/camera/label server and the Vercel Blob file watcher.
 
     Both are optional: if the "web" section of config.json is missing, or the
     extra dependencies (fastapi/uvicorn/httpx) aren't installed, we log a notice
-    and continue running just the print-labeling daemon.
+    and continue running just the print-logging daemon.
 
     Returns the list of stoppable service objects (for graceful shutdown).
     """
     log = logging.getLogger("main")
     services: list = []
     web_cfg = full_config.get("web", {}) or {}
+    labels_cfg = full_config.get("labels", {}) or {}
+
+    if not web_cfg:
+        log.info("No 'web' section in config.json — station API and file watcher disabled.")
+        return services
 
     # A registry the API server calls on every request to get the live monitors.
     def get_monitors() -> list[PrinterMonitor]:
@@ -135,7 +141,7 @@ def _start_station_services(
     else:
         log.info("No 'web.blob_token' in config.json — file watcher disabled.")
 
-    # ---- FastAPI status + camera server ----
+    # ---- FastAPI status + camera + label server ----
     api_host = web_cfg.get("api_host", "0.0.0.0")
     api_port = int(web_cfg.get("api_port", 8080))
     try:
@@ -149,6 +155,7 @@ def _start_station_services(
         get_monitors,
         watcher=watcher,
         webhook_secret=web_cfg.get("webhook_secret") or None,
+        email_labels_enabled=bool(labels_cfg.get("email_enabled", False)),
     )
     config = uvicorn.Config(app, host=api_host, port=api_port, log_level="info")
     server = uvicorn.Server(config)
@@ -203,29 +210,11 @@ def _run_mock(event_queue: queue.Queue) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tkinter queue poller
+# Headless event loop
 # ---------------------------------------------------------------------------
 
-def _requeue_unlabeled(event_queue: queue.Queue, serial_to_name: dict[str, str]) -> None:
-    """Put a PrintEndEvent back on the queue for every completed-but-unlabeled job."""
-    log = logging.getLogger("main")
-    rows = db.get_unlabeled_completed_jobs()
-    if not rows:
-        return
-    log.info("Found %d unlabeled completed job(s) from a previous run — re-prompting.", len(rows))
-    for row in rows:
-        serial = row["printer_serial"]
-        name = serial_to_name.get(serial, serial)
-        event_queue.put(PrintEndEvent(
-            job_id=row["job_id"],
-            printer_name=name,
-            subtask_name=row["subtask_name"],
-            final_state=row["final_state"],
-        ))
-
-
-def _make_heartbeat(root: tk.Tk, monitors: list):
-    """Returns a function that periodically logs daemon health."""
+def _make_heartbeat(monitors: list) -> Callable[[], None]:
+    """Returns a function that logs daemon health (called periodically)."""
     log = logging.getLogger("main")
 
     def beat() -> None:
@@ -234,61 +223,53 @@ def _make_heartbeat(root: tk.Tk, monitors: list):
             log.info("Heartbeat: %d/%d printer(s) connected.", connected, len(monitors))
         else:
             log.info("Heartbeat: running (no live monitors / mock mode).")
-        root.after(_HEARTBEAT_MS, beat)
 
     return beat
 
 
-def _make_poller(root: tk.Tk, event_queue: queue.Queue):
+def _run_event_loop(
+    event_queue: queue.Queue,
+    notifier: Optional[object],
+    stop_event: threading.Event,
+    heartbeat: Optional[Callable[[], None]] = None,
+    heartbeat_interval_s: float = _HEARTBEAT_S,
+    poll_s: float = 1.0,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
     """
-    Returns a function that shows ONE LabelPopup at a time. If a popup is already
-    open, queued events wait until it is dismissed. This avoids overlapping
-    grab_set() windows when several printers finish at once. Always runs on the
-    main thread.
-    """
-    log = logging.getLogger("gui")
-    state = {"popup_open": False}
+    Block on the print-end queue until ``stop_event`` is set.
 
-    def show_next() -> None:
-        if state["popup_open"]:
-            return
+    For every PrintEndEvent: log it, then hand it to ``notifier.notify_print_end``
+    (if a notifier is configured). A notifier failure is logged and swallowed —
+    nothing a notifier does may ever stop the daemon. The job's outcome row is
+    already in SQLite (mqtt_listener wrote it); labels arrive later via the
+    website.
+    """
+    log = logging.getLogger("events")
+    next_beat = clock() + heartbeat_interval_s
+    while not stop_event.is_set():
         try:
-            event: PrintEndEvent = event_queue.get_nowait()
+            event: Optional[PrintEndEvent] = event_queue.get(timeout=poll_s)
         except queue.Empty:
-            return
+            event = None
 
-        state["popup_open"] = True
-        log.info(
-            "Popup: printer=%s  state=%s  job=%s",
-            event.printer_name, event.final_state, event.job_id,
-        )
-
-        def on_label(user_label: int, label_time: str) -> None:
-            db.write_label(event.job_id, user_label, label_time)
-            label_word = "FAILED" if user_label else "SUCCEEDED"
+        if event is not None:
             log.info(
-                "Label saved: job=%s  label=%d (%s)",
-                event.job_id, user_label, label_word,
+                "Print ended: printer=%s  state=%s  job=%s  file=%s",
+                event.printer_name, event.final_state, event.job_id, event.subtask_name,
             )
+            if notifier is not None:
+                try:
+                    notifier.notify_print_end(event)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    log.exception("Notifier failed for job %s: %s", event.job_id, exc)
 
-        def on_close() -> None:
-            state["popup_open"] = False
-            # Immediately try to show the next queued popup, if any.
-            show_next()
-
-        LabelPopup(
-            parent=root,
-            printer_name=event.printer_name,
-            subtask_name=event.subtask_name,
-            on_label=on_label,
-            on_close=on_close,
-        )
-
-    def poll() -> None:
-        show_next()
-        root.after(250, poll)
-
-    return poll
+        if heartbeat is not None and clock() >= next_beat:
+            try:
+                heartbeat()
+            except Exception as exc:  # pragma: no cover — defensive
+                log.exception("Heartbeat failed: %s", exc)
+            next_beat = clock() + heartbeat_interval_s
 
 
 # ---------------------------------------------------------------------------
@@ -316,15 +297,17 @@ def main() -> None:
     log = logging.getLogger("main")
     log.info("=== MakerLAB Data Engine starting ===")
 
+    if args.mock:
+        # Never let fake jobs touch the real dataset.
+        db.DB_PATH = _MOCK_DB_PATH
     db.init_db()
 
     event_queue: queue.Queue = queue.Queue()
     monitors: list[PrinterMonitor] = []
-    serial_to_name: dict[str, str] = {}
     full_config: dict = {}
 
     if args.mock:
-        log.info("MOCK MODE — no real printers will be contacted.")
+        log.info("MOCK MODE — no real printers will be contacted (db: %s).", _MOCK_DB_PATH.name)
         threading.Thread(
             target=_run_mock,
             args=(event_queue,),
@@ -334,9 +317,11 @@ def main() -> None:
     else:
         printers = _load_config()
         full_config = _load_full_config()
+        # Rows created from now on are stamped with this data era (default 1 =
+        # quarantined; set labels.era to 2 when the label page goes live).
+        db.set_current_era(int((full_config.get("labels") or {}).get("era", 1)))
         log.info("Loaded %d printer(s) from config.json.", len(printers))
         for p in printers:
-            serial_to_name[p["serial"]] = p["name"]
             monitor = PrinterMonitor(
                 hostname=p["ip"],
                 serial=p["serial"],
@@ -347,32 +332,28 @@ def main() -> None:
             monitor.start()
             monitors.append(monitor)
 
-    # Re-prompt for any completed print that never got labeled (e.g. the daemon
-    # was closed while a popup was open). Their rows already exist in the DB.
-    _requeue_unlabeled(event_queue, serial_to_name)
-
-    # Start the optional station services (FastAPI status/camera server + the
-    # Vercel Blob file watcher). No-ops if the "web" section is absent.
+    # Start the optional station services (FastAPI status/camera/label server +
+    # the Vercel Blob file watcher). No-ops if the "web" section is absent.
     services = _start_station_services(monitors, full_config)
 
-    # ------------------------------------------------------------------
-    # Tkinter main loop (must run on the main thread)
-    # ------------------------------------------------------------------
-    root = tk.Tk()
-    root.withdraw()  # root window is invisible; only Toplevel popups are shown
-
-    poll = _make_poller(root, event_queue)
-    root.after(250, poll)
-
-    heartbeat = _make_heartbeat(root, monitors)
-    root.after(_HEARTBEAT_MS, heartbeat)
-
-    log.info("GUI loop started. Waiting for print events …")
+    stop_event = threading.Event()
     try:
-        root.mainloop()
+        signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
+    except (ValueError, OSError):  # pragma: no cover — not in the main thread / unsupported
+        pass
+
+    log.info("Daemon running (headless). Waiting for print events …")
+    try:
+        _run_event_loop(
+            event_queue,
+            notifier=None,
+            stop_event=stop_event,
+            heartbeat=_make_heartbeat(monitors),
+        )
     except KeyboardInterrupt:
         log.info("Interrupted by user.")
     finally:
+        stop_event.set()
         for monitor in monitors:
             monitor.stop()
         for svc in services:

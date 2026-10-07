@@ -16,6 +16,9 @@ def tmp_db(tmp_path, monkeypatch):
     """A freshly initialised, isolated database. Yields its path."""
     path = tmp_path / "test_dataset.db"
     monkeypatch.setattr(db, "DB_PATH", path)
+    # Registering the attribute with monkeypatch means any db.set_current_era()
+    # made inside a test is rolled back afterwards.
+    monkeypatch.setattr(db, "_current_era", 1)
     db.init_db()
     return path
 
@@ -30,6 +33,7 @@ def make_job(
     state: str | None = "FINISH",
     label: int | None = None,
     label_time: str | None = None,
+    label_source: str = "popup",
     print_error: int | None = None,
     filament: str | None = "PLA",
 ) -> None:
@@ -47,4 +51,4 @@ def make_job(
             job_id=job_id, end_time=end, final_state=state, print_error=print_error,
         )
     if label is not None:
-        db.write_label(job_id, label, label_time or "2026-10-01T12:00:00+00:00")
+        db.write_label(job_id, label, label_time or "2026-10-01T12:00:00+00:00", label_source)

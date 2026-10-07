@@ -9,6 +9,7 @@ SECRETS.md
 print_dataset.db
 print_dataset.db-shm
 print_dataset.db-wal
+print_dataset_mock.db*
 makerlab.log
 
 # --- Station file-watcher staging dirs (downloaded student submissions) ---

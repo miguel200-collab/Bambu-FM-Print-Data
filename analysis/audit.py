@@ -32,7 +32,6 @@ import json
 import sqlite3
 import sys
 from collections import Counter
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -40,20 +39,17 @@ from typing import Any, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from station.matching import (  # noqa: E402
-    EXACT,
-    NORMALIZED,
+    NONE,
+    candidate_uploads,
     is_calibration_job,
-    match_confidence,
+    parse_ts,
+    pick_upload,
 )
 
 # Labels closer together than this many seconds count as one "burst".
 BURST_GAP_S = 5.0
 # A burst needs at least this many labels to be flagged as mass-clicking.
 BURST_MIN_LABELS = 3
-# A job can only match an upload received at most this long before it started.
-MATCH_WINDOW = timedelta(days=30)
-# Clock-skew tolerance between the upload record and the printer's start time.
-MATCH_SLACK = timedelta(hours=1)
 
 
 # ---------------------------------------------------------------------------
@@ -74,15 +70,6 @@ def _tables(conn: sqlite3.Connection) -> set[str]:
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-
-
-def _parse_ts(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
 
 
 def cohen_kappa(a: int, b: int, c: int, d: int) -> Optional[float]:
@@ -118,7 +105,7 @@ def find_label_bursts(label_times: list[str]) -> dict[str, int]:
     Detect mass-clicking: runs of >= BURST_MIN_LABELS labels where each label is
     at most BURST_GAP_S after the previous one.
     """
-    stamps = sorted(t for t in (_parse_ts(x) for x in label_times) if t is not None)
+    stamps = sorted(t for t in (parse_ts(x) for x in label_times) if t is not None)
     bursts: list[int] = []
     run = 1
     for prev, cur in zip(stamps, stamps[1:]):
@@ -205,40 +192,38 @@ def audit_labels(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 def audit_matching(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
+    """
+    Match every job to an upload with the SAME rules the daemon uses
+    (station/matching.py): exact / normalized filename + time window.
+    """
     if "uploads" not in _tables(conn):
         return None
     uploads = conn.execute(
-        "SELECT upload_id, renamed_filename, received_at FROM uploads WHERE upload_status = 'done'"
+        "SELECT upload_id, student_name, renamed_filename, received_at"
+        " FROM uploads WHERE upload_status = 'done'"
     ).fetchall()
     jobs = [
         r for r in conn.execute("SELECT job_id, subtask_name, start_time FROM print_jobs").fetchall()
         if not is_calibration_job(r["subtask_name"])
     ]
 
-    matched_uploads: set[str] = set()
-    matched_jobs: set[str] = set()
-    levels: Counter[str] = Counter()
-    for up in uploads:
-        received = _parse_ts(up["received_at"])
-        for job in jobs:
-            level = match_confidence(job["subtask_name"], up["renamed_filename"])
-            if level not in (EXACT, NORMALIZED):
-                continue
-            started = _parse_ts(job["start_time"])
-            if received and started:
-                if started < received - MATCH_SLACK or started > received + MATCH_WINDOW:
-                    continue
-            matched_uploads.add(up["upload_id"])
-            matched_jobs.add(job["job_id"])
-            levels[level] += 1
+    printed_uploads: set[str] = set()
+    by_confidence: Counter[str] = Counter()
+    for job in jobs:
+        started = parse_ts(job["start_time"])
+        for _level, _received, up in candidate_uploads(job["subtask_name"], started, uploads):
+            printed_uploads.add(up["upload_id"])
+        by_confidence[pick_upload(job["subtask_name"], started, uploads).confidence] += 1
+
+    matched_jobs = len(jobs) - by_confidence[NONE]
     return {
         "uploads": len(uploads),
-        "uploads_with_a_job": len(matched_uploads),
-        "upload_match_rate": len(matched_uploads) / len(uploads) if uploads else None,
+        "uploads_with_a_job": len(printed_uploads),
+        "upload_match_rate": len(printed_uploads) / len(uploads) if uploads else None,
         "jobs": len(jobs),
-        "jobs_with_an_upload": len(matched_jobs),
-        "job_coverage": len(matched_jobs) / len(jobs) if jobs else None,
-        "pairs_by_level": dict(levels),
+        "jobs_with_an_upload": matched_jobs,
+        "job_coverage": matched_jobs / len(jobs) if jobs else None,
+        "jobs_by_confidence": dict(by_confidence),
     }
 
 
@@ -304,7 +289,7 @@ def format_report(result: dict[str, Any]) -> str:
             f"   ({_pct(m['upload_match_rate'])})",
             f"  jobs: {m['jobs']}   with a matching upload: {m['jobs_with_an_upload']}"
             f"   ({_pct(m['job_coverage'])})",
-            f"  matched pairs by level: {m['pairs_by_level']}",
+            f"  jobs by match confidence: {m['jobs_by_confidence']}",
         ]
     lines += [
         "",

@@ -2,16 +2,42 @@
 database.py — SQLite helpers for the MakerLAB print-failure dataset.
 
 All SQL lives here; no other module should touch the database directly.
+
+Migrations are strictly ADDITIVE (new columns/tables only — never drop, rename
+or rewrite existing data), because print_dataset.db exists only on the lab laptop.
+
+Data eras
+---------
+Every print job and upload is stamped with an ``era``:
+
+  era 1  everything collected before the "Label my print" web page went live.
+         Its popup labels were routinely mass-clicked, so it is quarantined:
+         used for the audit write-up and pipeline tests, never for training.
+  era 2  everything collected after launch (human labels via the web page, plus
+         the printer's own verdict).
+
+Old rows are backfilled to era 1 when the column is first added. New rows get the
+era set with ``set_current_era`` (main.py reads it from config ``labels.era``);
+it defaults to 1 so nothing is ever counted as "clean" by accident.
 """
 
 import sqlite3
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+from station.matching import JobMatch, parse_ts, pick_upload, is_calibration_job, normalize_netid
 
 log = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "print_dataset.db"
+
+# Era stamped on newly created rows (see module docstring).
+_current_era = 1
+
+# A finished print can be labeled for this long after it ended.
+LABEL_WINDOW_DAYS = 14
 
 _CREATE_PRINT_JOBS = """
 CREATE TABLE IF NOT EXISTS print_jobs (
@@ -29,6 +55,8 @@ CREATE TABLE IF NOT EXISTS print_jobs (
     filament_type   TEXT,
     user_label      INTEGER,
     label_time      TEXT,
+    label_source    TEXT,            -- 'popup' | 'web' | 'email'
+    era             INTEGER,         -- 1 = quarantined, 2 = clean era
     layer_height    REAL,
     infill_density  REAL,
     wall_loops      INTEGER
@@ -47,9 +75,42 @@ CREATE TABLE IF NOT EXISTS uploads (
     upload_status       TEXT NOT NULL,   -- 'pending' | 'uploading' | 'done' | 'failed'
     error_message       TEXT,
     received_at         TEXT,
-    uploaded_at         TEXT
+    uploaded_at         TEXT,
+    era                 INTEGER
 );
 """
+
+# Columns added after the first release. (table -> {column: sqlite type})
+_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
+    "print_jobs": {
+        "print_error": "INTEGER",
+        "label_source": "TEXT",
+        "era": "INTEGER",
+    },
+    "uploads": {
+        "era": "INTEGER",
+    },
+}
+
+# One-off backfills, run ONLY at the moment the column is first added, so they
+# can never overwrite data written later.
+_BACKFILLS: dict[tuple[str, str], str] = {
+    ("print_jobs", "label_source"):
+        "UPDATE print_jobs SET label_source = 'popup' WHERE user_label IS NOT NULL",
+    ("print_jobs", "era"): "UPDATE print_jobs SET era = 1",
+    ("uploads", "era"): "UPDATE uploads SET era = 1",
+}
+
+
+def set_current_era(era: int) -> None:
+    """Set the era stamped on newly created jobs/uploads (from config ``labels.era``)."""
+    global _current_era
+    _current_era = int(era)
+    log.info("Data era for new rows: %d", _current_era)
+
+
+def get_current_era() -> int:
+    return _current_era
 
 
 def _connect() -> sqlite3.Connection:
@@ -74,15 +135,18 @@ def init_db() -> None:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Add any columns missing from older databases (idempotent)."""
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(print_jobs)")}
-    expected = {
-        "print_error": "INTEGER",
-    }
-    for col, col_type in expected.items():
-        if col not in existing:
-            conn.execute(f"ALTER TABLE print_jobs ADD COLUMN {col} {col_type}")
-            log.info("Migrated database: added column %s", col)
+    """Add any columns missing from older databases (idempotent, additive only)."""
+    for table, wanted in _COLUMN_MIGRATIONS.items():
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for col, col_type in wanted.items():
+            if col in existing:
+                continue
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+            log.info("Migrated database: added column %s.%s", table, col)
+            backfill = _BACKFILLS.get((table, col))
+            if backfill:
+                conn.execute(backfill)
+                log.info("Migrated database: backfilled %s.%s", table, col)
 
 
 def create_job(
@@ -100,13 +164,14 @@ def create_job(
     sql = """
         INSERT OR IGNORE INTO print_jobs
             (job_id, printer_serial, printer_ip, start_time,
-             subtask_name, gcode_file, nozzle_temper, bed_temper, filament_type)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             subtask_name, gcode_file, nozzle_temper, bed_temper, filament_type, era)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     with _connect() as conn:
         conn.execute(sql, (
             job_id, printer_serial, printer_ip, start_time,
             subtask_name, gcode_file, nozzle_temper, bed_temper, filament_type,
+            _current_era,
         ))
     log.info("[%s] Job created: %s  file=%s", printer_serial, job_id, subtask_name)
 
@@ -152,41 +217,35 @@ def update_job_end(
     log.info("Job ended: %s  state=%s", job_id, final_state)
 
 
-def write_label(job_id: str, user_label: int, label_time: str) -> None:
+def get_job(job_id: str) -> Optional[sqlite3.Row]:
+    """Return one print job row, or None."""
+    with _connect() as conn:
+        return conn.execute("SELECT * FROM print_jobs WHERE job_id = ?", (job_id,)).fetchone()
+
+
+def write_label(job_id: str, user_label: int, label_time: str, source: str) -> bool:
     """
-    Write the staff label for a completed print job.
+    Write the human label for a completed print job.
 
     Parameters
     ----------
     job_id      : UUID of the job row.
     user_label  : 0 = print succeeded, 1 = print failed.
-    label_time  : ISO-8601 timestamp when the staff clicked the button.
+    label_time  : ISO-8601 timestamp when the label was given.
+    source      : where the label came from: 'popup' | 'web' | 'email'.
+
+    Returns True if a job row was updated, False if the job_id doesn't exist.
     """
     sql = """
         UPDATE print_jobs
-        SET user_label = ?, label_time = ?
+        SET user_label = ?, label_time = ?, label_source = ?
         WHERE job_id = ?
     """
     with _connect() as conn:
-        conn.execute(sql, (user_label, label_time, job_id))
-    log.info("Label written: job=%s  label=%d", job_id, user_label)
-
-
-def get_unlabeled_completed_jobs() -> list[sqlite3.Row]:
-    """
-    Return all jobs that have ended (final_state set) but were never labeled.
-
-    Used at startup to re-prompt for any print whose popup was missed because the
-    daemon was closed or crashed while the popup was open.
-    """
-    sql = """
-        SELECT job_id, printer_serial, subtask_name, final_state
-        FROM print_jobs
-        WHERE final_state IS NOT NULL AND user_label IS NULL
-        ORDER BY end_time ASC
-    """
-    with _connect() as conn:
-        return conn.execute(sql).fetchall()
+        updated = conn.execute(sql, (user_label, label_time, source, job_id)).rowcount
+    log.info("Label written: job=%s  label=%d  source=%s  updated=%d",
+             job_id, user_label, source, updated)
+    return updated > 0
 
 
 # ---------------------------------------------------------------------------
@@ -207,13 +266,14 @@ def create_upload(
     sql = """
         INSERT OR IGNORE INTO uploads
             (upload_id, blob_key, student_name, original_filename,
-             renamed_filename, target_printer, upload_status, received_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             renamed_filename, target_printer, upload_status, received_at, era)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     with _connect() as conn:
         conn.execute(sql, (
             upload_id, blob_key, student_name, original_filename,
             renamed_filename, target_printer, upload_status, received_at,
+            _current_era,
         ))
     log.info("Upload recorded: %s  blob=%s  file=%s", upload_id, blob_key, renamed_filename)
 
@@ -241,10 +301,83 @@ def list_recent_uploads(limit: int = 50) -> list[sqlite3.Row]:
     sql = """
         SELECT upload_id, blob_key, student_name, original_filename, renamed_filename,
                target_printer, printer_serial, upload_status, error_message,
-               received_at, uploaded_at
+               received_at, uploaded_at, era
         FROM uploads
         ORDER BY received_at DESC
         LIMIT ?
     """
     with _connect() as conn:
         return conn.execute(sql, (limit,)).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Join: print job <-> upload   (rules live in station/matching.py)
+# ---------------------------------------------------------------------------
+
+_UPLOAD_MATCH_COLUMNS = "upload_id, student_name, renamed_filename, received_at"
+
+
+def _done_uploads(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    # Only uploads that were fully archived can have been printed from the inbox.
+    return conn.execute(
+        f"SELECT {_UPLOAD_MATCH_COLUMNS} FROM uploads WHERE upload_status = 'done'"
+    ).fetchall()
+
+
+def find_upload_for_job(
+    subtask_name: Optional[str], start_time: Optional[str]
+) -> JobMatch:
+    """
+    Find the upload a print job most likely ran, by filename + time window.
+
+    Returns a ``JobMatch`` whose ``confidence`` is ``exact`` / ``normalized`` /
+    ``ambiguous`` / ``none`` (see station/matching.py). Printer-initiated
+    calibration jobs never match.
+    """
+    with _connect() as conn:
+        uploads = _done_uploads(conn)
+    return pick_upload(subtask_name, parse_ts(start_time), uploads)
+
+
+def list_jobs_for_netid(
+    netid: str, days: int = LABEL_WINDOW_DAYS, now: Optional[datetime] = None
+) -> list[dict[str, Any]]:
+    """
+    A student's recently ENDED print jobs (newest first), found by joining each
+    job to the uploads table by filename. Used by the "Label my print" page.
+    """
+    key = normalize_netid(netid)
+    if not key:
+        return []
+    now = now or datetime.now(timezone.utc)
+    cutoff = now.timestamp() - days * 86400
+
+    with _connect() as conn:
+        uploads = _done_uploads(conn)
+        jobs = conn.execute(
+            "SELECT * FROM print_jobs WHERE final_state IS NOT NULL ORDER BY end_time DESC"
+        ).fetchall()
+
+    out: list[dict[str, Any]] = []
+    for job in jobs:
+        ended = parse_ts(job["end_time"])
+        if ended is None or ended.timestamp() < cutoff:
+            continue
+        if is_calibration_job(job["subtask_name"]):
+            continue
+        match = pick_upload(job["subtask_name"], parse_ts(job["start_time"]), uploads)
+        if match.upload is None or normalize_netid(match.student_name) != key:
+            continue
+        out.append({
+            "job_id": job["job_id"],
+            "subtask_name": job["subtask_name"],
+            "filename": match.upload["renamed_filename"],
+            "printer_serial": job["printer_serial"],
+            "start_time": job["start_time"],
+            "end_time": job["end_time"],
+            "final_state": job["final_state"],
+            "user_label": job["user_label"],
+            "label_source": job["label_source"],
+            "match_confidence": match.confidence,
+        })
+    return out

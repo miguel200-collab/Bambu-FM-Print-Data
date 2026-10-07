@@ -14,8 +14,7 @@ echo  Launcher path: %LAUNCHER%
 echo.
 
 :: /sc ONLOGON  → runs at every user login
-:: /rl HIGHEST  → runs with the highest available privilege (needed so the
-::                window can appear on top of other apps)
+:: /rl HIGHEST  → runs with the highest available privilege
 :: /f           → overwrite if the task already exists
 schtasks /create ^
   /tn "%TASK_NAME%" ^
