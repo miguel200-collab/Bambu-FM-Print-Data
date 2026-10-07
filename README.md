@@ -512,8 +512,8 @@ Fully automating the manual "click Upload in BFM" step. Two viable routes:
 BFM's local server has no documented upload API, and its `debug.log` shows no
 upload requests — a direct API replication would require reproducing Bambu's
 request signing, which isn't worth it while the manual Upload click is
-acceptable. `station/inspect_bfm.py` was written to investigate this and can be
-re-run if the automated route is ever pursued.
+acceptable. (The old `station/inspect_bfm.py` investigation tool was removed;
+it is recoverable from git history if the automated route is ever pursued.)
 
 ---
 
@@ -521,5 +521,4 @@ re-run if the automated route is ever pursued.
 
 - Official BFM docs: <https://wiki.bambulab.com/en/software/bambu-farm-manager>
 - Tunnel setup: [`station/TUNNEL.md`](station/TUNNEL.md)
-- Inspection script (reference): [`station/inspect_bfm.py`](station/inspect_bfm.py)
 - Web app: [`web/README.md`](web/README.md)

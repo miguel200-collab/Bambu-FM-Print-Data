@@ -2,6 +2,8 @@
 # config.json holds real printer credentials (IPs, serials, access codes).
 # Only the sanitized config.json.template is committed.
 config.json
+# SECRETS.md is a private checklist of every key/token and where it is set.
+SECRETS.md
 
 # --- Runtime data (Windows-only, never commit) ---
 print_dataset.db
@@ -49,3 +51,6 @@ AGENTS.md
 
 # --- Backup run log ---
 backup.log
+
+# --- Test caches ---
+.pytest_cache/
