@@ -46,3 +46,6 @@ AGENTS.md
 *.pptx
 *.ppt
 *.key
+
+# --- Backup run log ---
+backup.log
