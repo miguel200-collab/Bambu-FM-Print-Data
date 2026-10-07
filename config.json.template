@@ -38,6 +38,12 @@
     "poll_interval_s": 0,
     "inbox_dir": "C:\\BambuSubmissions"
   },
+  "labels": {
+    "era": 1,
+    "email_enabled": false,
+    "notify_url": "https://YOUR-SITE.vercel.app/api/notify-print-end",
+    "email_domain": "cornell.edu"
+  },
   "backup": {
     "dest": "C:\\Users\\YOU\\OneDrive\\BambuBackups",
     "keep_days": 30

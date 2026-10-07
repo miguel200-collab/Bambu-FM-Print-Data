@@ -1,14 +1,26 @@
 import type { Metadata } from "next";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LabelByLink } from "@/components/LabelByLink";
 import { LabelPrints } from "@/components/LabelPrints";
 import { FAILURE_DEFINITION } from "@/lib/labeling";
+import { resolveLabelLink } from "@/lib/labelLinks";
+
+// Depends on the ?t= query string (future email links).
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Label my print — MakerLAB // Cornell Tech",
   description: "Tell the MakerLAB how your print turned out.",
 };
 
-export default function LabelPage() {
+export default function LabelPage({
+  searchParams,
+}: {
+  searchParams: { t?: string | string[] };
+}) {
+  const t = typeof searchParams.t === "string" ? searchParams.t : undefined;
+  const { linked, problem } = resolveLabelLink(t);
+
   return (
     <>
       <header className="topbar">
@@ -49,7 +61,12 @@ export default function LabelPage() {
             <span className="section-meta">last 14 days</span>
           </div>
           <p>{FAILURE_DEFINITION}</p>
-          <LabelPrints />
+          {problem && <div className="form-msg err" style={{ marginBottom: "1rem" }}>{problem}</div>}
+          {linked ? (
+            <LabelByLink token={linked.token} filename={linked.filename} printer={linked.printer} />
+          ) : (
+            <LabelPrints />
+          )}
         </section>
 
         <footer className="footer">

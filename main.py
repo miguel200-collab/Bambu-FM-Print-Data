@@ -33,6 +33,7 @@ from typing import Callable, Optional
 
 import database as db
 from mqtt_listener import PrintEndEvent, PrinterMonitor
+from station.label_notifier import LabelNotifier
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -346,7 +347,10 @@ def main() -> None:
     try:
         _run_event_loop(
             event_queue,
-            notifier=None,
+            # Email reminders are a FUTURE feature: disabled unless
+            # config.json labels.email_enabled is true (and still sends nothing
+            # without recorded consent). See station/label_notifier.py.
+            notifier=LabelNotifier.from_config(full_config),
             stop_event=stop_event,
             heartbeat=_make_heartbeat(monitors),
         )

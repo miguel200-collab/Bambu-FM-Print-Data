@@ -83,3 +83,55 @@ describe("POST /api/label — proxy", () => {
     expect((await res.json()).error).toMatch(/offline/);
   });
 });
+
+// --------------------------------------------------------------------------- email links (FUTURE, disabled)
+
+import { signLabelToken } from "@/lib/labelLinks";
+
+describe("POST /api/label — email token path", () => {
+  const SECRET = "0123456789abcdef-secret";
+  const enable = () => {
+    vi.stubEnv("EMAIL_LABELING_ENABLED", "true");
+    vi.stubEnv("LABEL_LINK_SECRET", SECRET);
+  };
+  const token = () => signLabelToken({ jobId: JOB }, SECRET);
+
+  it("is disabled by default: a perfectly valid token is refused with 501", async () => {
+    vi.stubEnv("LABEL_LINK_SECRET", SECRET);                       // secret set, flag NOT set
+    const res = await post({ token: token(), outcome: "failed" });
+    expect(res.status).toBe(501);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("is refused without a configured secret even if the flag is on", async () => {
+    vi.stubEnv("EMAIL_LABELING_ENABLED", "true");
+    expect((await post({ token: "a.b", outcome: "failed" })).status).toBe(501);
+  });
+
+  it("when enabled, forwards the token's job with source=email and NO netid", async () => {
+    enable();
+    fetchMock.mockResolvedValue(Response.json({ ok: true }));
+    const res = await post({ token: token(), outcome: "succeeded", netid: "victim", job_id: "ignored", source: "web" });
+    expect(res.status).toBe(200);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      job_id: JOB, outcome: "succeeded", source: "email",
+    });
+  });
+
+  it("maps bad tokens: malformed 400, forged 403, expired 410", async () => {
+    enable();
+    expect((await post({ token: "garbage", outcome: "failed" })).status).toBe(400);
+    const forged = signLabelToken({ jobId: JOB }, "a-completely-different-secret");
+    expect((await post({ token: forged, outcome: "failed" })).status).toBe(403);
+    const old = signLabelToken({ jobId: JOB }, SECRET, 1_000_000_000);       // long expired
+    const res = await post({ token: old, outcome: "failed" });
+    expect(res.status).toBe(410);
+    expect((await res.json()).error).toMatch(/expired/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("still validates the outcome", async () => {
+    enable();
+    expect((await post({ token: token(), outcome: "maybe" })).status).toBe(400);
+  });
+});
