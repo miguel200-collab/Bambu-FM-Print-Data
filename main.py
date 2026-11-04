@@ -19,13 +19,17 @@ Mock mode (offline testing, no printers required):
 """
 
 import argparse
+import atexit
 import json
 import logging
 import logging.handlers
+import os
 import queue
 import signal
+import sys
 import threading
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +50,72 @@ _MOCK_DB_PATH = _BASE_DIR / "print_dataset_mock.db"
 
 # How often the heartbeat line is written to the log (5 minutes).
 _HEARTBEAT_S = 5 * 60
+
+
+#region agent log
+# Temporary diagnostic instrumentation for the "pythonw exits silently" bug.
+# Writes NDJSON next to the code so it is readable on the Windows laptop, AND
+# mirrors tracebacks into makerlab.log (which works fine under pythonw).
+# Safe to delete once the root cause is fixed and verified.
+_DEBUG_LOG_PATH = _BASE_DIR / "debug_pythonw.ndjson"
+
+
+def _dbg(location: str, message: str, data: Optional[dict] = None,
+         hypothesis: str = "H1") -> None:
+    """Append one NDJSON record. NEVER raises (it runs inside the daemon)."""
+    try:
+        record = {
+            "id": f"log_{int(time.time() * 1000)}_{os.getpid()}",
+            "timestamp": int(time.time() * 1000),
+            "sessionId": "cd91a8",
+            "runId": "pythonw-diag",
+            "location": location,
+            "message": message,
+            "data": data or {},
+            "hypothesisId": hypothesis,
+        }
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except Exception:
+        pass
+
+
+def _install_debug_hooks() -> None:
+    """Capture the tracebacks pythonw would otherwise swallow."""
+    def _hook(exc_type, exc, tb) -> None:
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        _dbg("excepthook", "uncaught exception", {
+            "type": getattr(exc_type, "__name__", str(exc_type)),
+            "repr": repr(exc)[:500],
+            "stdout_none": sys.stdout is None,
+            "stderr_none": sys.stderr is None,
+        }, "H1")
+        try:
+            logging.getLogger("main").error("UNCAUGHT EXCEPTION\n%s", text)
+        except Exception:
+            pass
+
+    sys.excepthook = _hook
+
+    if hasattr(threading, "excepthook"):
+        def _thread_hook(args) -> None:
+            text = "".join(traceback.format_exception(
+                args.exc_type, args.exc_value, args.exc_traceback))
+            _dbg("threading.excepthook", "thread exception", {
+                "thread": getattr(args.thread, "name", None),
+            }, "H4")
+            try:
+                logging.getLogger("main").error("UNCAUGHT THREAD EXCEPTION\n%s", text)
+            except Exception:
+                pass
+
+        threading.excepthook = _thread_hook
+
+    atexit.register(lambda: _dbg("atexit", "process exiting", {
+        "stdout_none": sys.stdout is None,
+        "stderr_none": sys.stderr is None,
+    }, "H4"))
+#endregion
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +209,10 @@ def _start_station_services(
             )
             watcher.start()
             services.append(watcher)
+            #region agent log
+            _dbg("services.watcher_started", "FileWatcher.start() returned",
+                 {"services": len(services)}, "H2")
+            #endregion
     else:
         log.info("No 'web.blob_token' in config.json — file watcher disabled.")
 
@@ -152,14 +226,43 @@ def _start_station_services(
         log.warning("Station API server unavailable (missing dependency): %s", exc)
         return services
 
-    app = create_app(
-        get_monitors,
-        watcher=watcher,
-        webhook_secret=web_cfg.get("webhook_secret") or None,
-        email_labels_enabled=bool(labels_cfg.get("email_enabled", False)),
-    )
-    config = uvicorn.Config(app, host=api_host, port=api_port, log_level="info")
-    server = uvicorn.Server(config)
+    #region agent log
+    _dbg("services.uvicorn_imported", "uvicorn + create_app imported", {
+        "uvicorn_version": getattr(uvicorn, "__version__", None),
+        "uvicorn_file": getattr(uvicorn, "__file__", None),
+        "stdout_none": sys.stdout is None,
+        "stderr_none": sys.stderr is None,
+    }, "H1")
+    #endregion
+
+    try:
+        app = create_app(
+            get_monitors,
+            watcher=watcher,
+            webhook_secret=web_cfg.get("webhook_secret") or None,
+            email_labels_enabled=bool(labels_cfg.get("email_enabled", False)),
+        )
+        #region agent log
+        _dbg("services.app_created", "create_app() returned", {"api_host": api_host,
+             "api_port": api_port}, "H2")
+        #endregion
+        config = uvicorn.Config(app, host=api_host, port=api_port, log_level="info")
+        server = uvicorn.Server(config)
+    except BaseException as exc:  # instrumented: log, then preserve old behaviour
+        #region agent log
+        _dbg("services.api_build_failed", "station API construction raised", {
+            "exc_type": type(exc).__name__,
+            "exc": str(exc)[:400],
+            "stdout_none": sys.stdout is None,
+            "stderr_none": sys.stderr is None,
+        }, "H1")
+        #endregion
+        log.exception("Station API construction failed (this would kill pythonw silently)")
+        raise
+
+    #region agent log
+    _dbg("services.server_created", "uvicorn.Server created", {}, "H1")
+    #endregion
 
     def _serve() -> None:
         try:
@@ -170,6 +273,10 @@ def _start_station_services(
     threading.Thread(target=_serve, name="station-api", daemon=True).start()
     log.info("Station API listening on http://%s:%d (use a tunnel to expose it)", api_host, api_port)
     services.append(server)
+    #region agent log
+    _dbg("services.done", "station services fully started",
+         {"services": len(services)}, "H2")
+    #endregion
     return services
 
 
@@ -321,6 +428,16 @@ def main() -> None:
     args = parser.parse_args()
 
     _setup_logging()
+    #region agent log
+    _install_debug_hooks()
+    _dbg("main.enter", "daemon starting", {
+        "stdout_none": sys.stdout is None,
+        "stderr_none": sys.stderr is None,
+        "executable": sys.executable,
+        "argv": sys.argv,
+        "mock": bool(args.mock),
+    }, "H1")
+    #endregion
     log = logging.getLogger("main")
     log.info("=== MakerLAB Data Engine starting ===")
 
@@ -362,11 +479,18 @@ def main() -> None:
     # Start the optional station services (FastAPI status/camera/label server +
     # the Vercel Blob file watcher). No-ops if the "web" section is absent.
     services = _start_station_services(monitors, full_config)
+    #region agent log
+    _dbg("main.services_done", "_start_station_services returned",
+         {"services": len(services)}, "H2")
+    #endregion
 
     stop_event = threading.Event()
     _install_signal_handlers(stop_event)
 
     log.info("Daemon running (headless). Waiting for print events …")
+    #region agent log
+    _dbg("main.event_loop_enter", "entering main event loop", {}, "H4")
+    #endregion
     try:
         _run_event_loop(
             event_queue,

@@ -55,3 +55,6 @@ backup.log
 
 # --- Test caches ---
 .pytest_cache/
+
+# --- Temporary debug instrumentation output ---
+debug_pythonw.ndjson
