@@ -17,9 +17,6 @@ async function loadPrinters(): Promise<PrinterSnapshot[]> {
 
 export default async function Page() {
   const printers = await loadPrinters();
-  // Server-side read of the station URL; passed to the client grid so it can
-  // build camera <img> srcs without needing NEXT_PUBLIC_STATION_API_URL.
-  const stationApiUrl = process.env.STATION_API_URL ?? "";
 
   return (
     <>
@@ -55,13 +52,13 @@ export default async function Page() {
             <span className="plus">+</span>PRINTERS <span className="dim">// FARM</span>
           </h1>
           <p className="hero-sub">
-            Live status and camera feeds from the MakerLAB Bambu fleet. Submit
-            a sliced print from home and pick it up from the lab&apos;s upload
-            inbox on the dedicated laptop.
+            Live status from the MakerLAB Bambu fleet. Submit a sliced print
+            from home and pick it up from the lab&apos;s upload inbox on the
+            dedicated laptop.
           </p>
         </section>
 
-        <PrinterGrid initialPrinters={printers} stationApiUrl={stationApiUrl} />
+        <PrinterGrid initialPrinters={printers} />
 
         <section id="submit" className="section form-section">
           <div className="section-head">

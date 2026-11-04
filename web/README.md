@@ -1,7 +1,7 @@
 # Bambu Farm Manager — Web (Vercel)
 
 A futuristic, Cornell Tech-themed Next.js site where students see live printer
-status + camera snapshots, submit sliced `.gcode.3mf` files, and tell the lab how
+status, submit sliced `.gcode.3mf` files, and tell the lab how
 their print turned out (**Label my print**). Submitted files land in Vercel Blob;
 the dedicated laptop is notified via a webhook (no polling) and drops each renamed
 file into an inbox folder on the laptop (see `../station/` and the Architecture
@@ -81,6 +81,9 @@ section in `../README.md`).
 ## How status works
 
 - The page calls `GET <STATION_API_URL>/api/printers` at render time.
-- Each printer card's camera `<img>` points at
-  `<STATION_API_URL>/api/printer/<serial>/camera`, which the station proxies
-  from the printer over the LAN.
+- Printer status is polled every 20 s by the grid (plus on tab focus).
+- Each card shows a static model illustration from `public/printers/`
+  (`x1c.svg`, `p1s.svg`, `a1.svg`, `generic.svg`), chosen by
+  `lib/printerImages.ts` from the printer name/model. Live camera frames
+  (`/api/printer/<serial>/camera`) are no longer requested — the printers'
+  cameras return HTTP 502 and the 2 s refresh is unused.

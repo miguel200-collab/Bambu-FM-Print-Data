@@ -2,24 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { PrinterCard } from "@/components/PrinterCard";
+import { printerImage } from "@/lib/printerImages";
 import type { PrinterSnapshot } from "@/lib/station";
 
 interface Props {
   initialPrinters: PrinterSnapshot[];
-  stationApiUrl: string;
 }
 
 const POLL_MS = 20000;
-const CAMERA_POLL_MS = 2000;
 
-function cameraSrc(stationApiUrl: string, serial: string, refreshKey: number): string {
-  const base = `${stationApiUrl}/api/printer/${encodeURIComponent(serial)}/camera`;
-  return refreshKey > 0 ? `${base}?t=${refreshKey}` : base;
-}
-
-export function PrinterGrid({ initialPrinters, stationApiUrl }: Props) {
+export function PrinterGrid({ initialPrinters }: Props) {
   const [printers, setPrinters] = useState<PrinterSnapshot[]>(initialPrinters);
-  const [refreshKey, setRefreshKey] = useState(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -47,20 +40,6 @@ export function PrinterGrid({ initialPrinters, stationApiUrl }: Props) {
     };
   }, [refresh]);
 
-  // Camera refresh: every 2s, cache-busted via refreshKey. Decoupled from the
-  // status poll so the feed feels live without re-fetching the JSON status.
-  // Pauses when the tab is hidden to avoid loading frames no one is looking at.
-  useEffect(() => {
-    let id: number | undefined;
-    const tick = () => {
-      if (!document.hidden) setRefreshKey((k) => k + 1);
-    };
-    id = window.setInterval(tick, CAMERA_POLL_MS);
-    return () => {
-      if (id) window.clearInterval(id);
-    };
-  }, []);
-
   const online = printers.length > 0;
   const connectedCount = printers.filter((p) => p.connected).length;
 
@@ -82,9 +61,7 @@ export function PrinterGrid({ initialPrinters, stationApiUrl }: Props) {
             <PrinterCard
               key={p.serial}
               printer={p}
-              cameraSrc={
-                stationApiUrl ? cameraSrc(stationApiUrl, p.serial, refreshKey) : null
-              }
+              imageSrc={printerImage(p.model ?? p.name)}
             />
           ))}
         </div>

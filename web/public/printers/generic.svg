@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 300" role="img" aria-label="Bambu Lab 3D printer">
+  <defs>
+    <linearGradient id="gen-front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a5058"/>
+      <stop offset="1" stop-color="#2f353c"/>
+    </linearGradient>
+    <linearGradient id="gen-side" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2b3138"/>
+      <stop offset="1" stop-color="#22282e"/>
+    </linearGradient>
+    <linearGradient id="gen-top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b626b"/>
+      <stop offset="1" stop-color="#3d444b"/>
+    </linearGradient>
+    <linearGradient id="gen-glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1a2027"/>
+      <stop offset="1" stop-color="#0b0f14"/>
+    </linearGradient>
+  </defs>
+
+  <path d="M245 55 L273 37 L273 252 L245 270 Z" fill="url(#gen-side)" stroke="#1a1f24" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M55 55 L83 37 L273 37 L245 55 Z" fill="url(#gen-top)" stroke="#1a1f24" stroke-width="2" stroke-linejoin="round"/>
+  <rect x="55" y="55" width="190" height="215" rx="9" fill="url(#gen-front)" stroke="#1a1f24" stroke-width="2"/>
+
+  <rect x="69" y="69" width="162" height="154" rx="5" fill="url(#gen-glass)" stroke="#151a20" stroke-width="2"/>
+  <path d="M88 190 L208 190 L224 210 L72 210 Z" fill="#2b3239" stroke="#1d232a" stroke-width="1.5"/>
+  <rect x="78" y="116" width="144" height="6" rx="2" fill="#4d545d"/>
+
+  <path d="M75 75 L124 75 L90 217 L75 217 Z" fill="#ffffff" opacity="0.08"/>
+  <rect x="74" y="124" width="8" height="42" rx="4" fill="#6b737d" stroke="#20252b" stroke-width="1"/>
+
+  <rect x="62" y="266" width="26" height="7" rx="3" fill="#20252b"/>
+  <rect x="212" y="266" width="26" height="7" rx="3" fill="#20252b"/>
+  <rect x="255" y="249" width="12" height="7" rx="3" fill="#1c2126"/>
+
+  <rect x="176" y="228" width="48" height="22" rx="3" fill="#10151a" stroke="#4a525c" stroke-width="1.5"/>
+  <rect x="181" y="232" width="38" height="14" rx="2" fill="#0d2a1e"/>
+  <circle cx="187" cy="239" r="2.4" fill="#3ddc97"/>
+</svg>

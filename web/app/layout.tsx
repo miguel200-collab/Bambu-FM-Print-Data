@@ -17,7 +17,7 @@ const mono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "MakerLAB // Cornell Tech — Bambu Farm",
   description:
-    "Live printer status, camera snapshots, and student print submission for the Cornell Tech MakerLAB Bambu farm.",
+    "Live printer status and student print submission for the Cornell Tech MakerLAB Bambu farm.",
 };
 
 // Runs before paint to set the theme attribute, preventing a flash of the

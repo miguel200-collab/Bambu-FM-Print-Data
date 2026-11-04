@@ -9,6 +9,8 @@ export interface PrinterSnapshot {
   name: string;
   serial: string;
   ip: string;
+  /** Optional model string from the station (e.g. "X1C"); falls back to `name`. */
+  model?: string | null;
   connected: boolean;
   state: string | null;
   subtask_name: string | null;

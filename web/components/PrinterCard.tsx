@@ -11,14 +11,15 @@ interface Props {
     bed_temper: number | null;
     filament_type: string | null;
   };
-  cameraSrc: string | null;
+  /** Static illustration for this printer's model (see lib/printerImages.ts). */
+  imageSrc: string;
 }
 
 function fmtTemp(t: number | null): string {
   return t == null ? "—" : `${t.toFixed(0)}°C`;
 }
 
-export function PrinterCard({ printer, cameraSrc }: Props) {
+export function PrinterCard({ printer, imageSrc }: Props) {
   const state = (printer.state || (printer.connected ? "IDLE" : "OFFLINE")).toUpperCase();
 
   return (
@@ -31,11 +32,7 @@ export function PrinterCard({ printer, cameraSrc }: Props) {
         <StatusBadge state={state} connected={printer.connected} />
       </div>
 
-      {cameraSrc ? (
-        <img className="camera" src={cameraSrc} alt={`${printer.name} camera`} />
-      ) : (
-        <div className="camera-fallback">No camera available</div>
-      )}
+      <img className="printer-image" src={imageSrc} alt="" aria-hidden="true" />
 
       <div className="metrics">
         <div className="metric">

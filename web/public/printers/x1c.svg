@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 300" role="img" aria-label="Bambu Lab X1 Carbon 3D printer">
+  <defs>
+    <linearGradient id="x1c-front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4b5159"/>
+      <stop offset="0.55" stop-color="#3a4047"/>
+      <stop offset="1" stop-color="#2e343b"/>
+    </linearGradient>
+    <linearGradient id="x1c-side" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2b3138"/>
+      <stop offset="1" stop-color="#22282e"/>
+    </linearGradient>
+    <linearGradient id="x1c-top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b626b"/>
+      <stop offset="1" stop-color="#3d444b"/>
+    </linearGradient>
+    <linearGradient id="x1c-glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1c222a"/>
+      <stop offset="0.45" stop-color="#12171d"/>
+      <stop offset="1" stop-color="#0b0f14"/>
+    </linearGradient>
+    <linearGradient id="x1c-sheen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.17"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.03"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- right side face -->
+  <path d="M245 55 L273 37 L273 252 L245 270 Z" fill="url(#x1c-side)" stroke="#1a1f24" stroke-width="2" stroke-linejoin="round"/>
+  <!-- top face -->
+  <path d="M55 55 L83 37 L273 37 L245 55 Z" fill="url(#x1c-top)" stroke="#1a1f24" stroke-width="2" stroke-linejoin="round"/>
+  <!-- front face -->
+  <rect x="55" y="55" width="190" height="215" rx="9" fill="url(#x1c-front)" stroke="#1a1f24" stroke-width="2"/>
+
+  <!-- glass door -->
+  <rect x="69" y="69" width="162" height="150" rx="5" fill="url(#x1c-glass)" stroke="#151a20" stroke-width="2"/>
+
+  <!-- interior gantry + toolhead -->
+  <rect x="78" y="112" width="144" height="6" rx="2" fill="#4d545d"/>
+  <rect x="140" y="98" width="19" height="24" rx="3" fill="#5c646e"/>
+  <rect x="144" y="118" width="11" height="8" rx="2" fill="#3ddc97" opacity="0.5"/>
+
+  <!-- interior build plate in perspective -->
+  <path d="M88 184 L208 184 L226 206 L70 206 Z" fill="#2b3239" stroke="#1d232a" stroke-width="1.5"/>
+  <path d="M88 184 L208 184 L220 198 L76 198 Z" fill="#3b4650" opacity="0.65"/>
+
+  <!-- glass sheen -->
+  <path d="M75 75 L126 75 L90 213 L75 213 Z" fill="url(#x1c-sheen)"/>
+  <path d="M202 75 L215 75 L179 213 L166 213 Z" fill="#ffffff" opacity="0.04"/>
+
+  <!-- door handle -->
+  <rect x="74" y="120" width="9" height="44" rx="4" fill="#6b737d" stroke="#20252b" stroke-width="1"/>
+
+  <!-- top lid reflection -->
+  <path d="M88 41 L120 41 L96 51 L78 51 Z" fill="#ffffff" opacity="0.13"/>
+
+  <!-- lower front panel + feet -->
+  <rect x="69" y="222" width="162" height="26" rx="3" fill="#2a3037" opacity="0.85"/>
+  <rect x="62" y="266" width="26" height="7" rx="3" fill="#20252b"/>
+  <rect x="212" y="266" width="26" height="7" rx="3" fill="#20252b"/>
+  <rect x="255" y="249" width="12" height="7" rx="3" fill="#1c2126"/>
+
+  <!-- touchscreen -->
+  <rect x="176" y="226" width="48" height="24" rx="3" fill="#10151a" stroke="#4a525c" stroke-width="1.5"/>
+  <rect x="181" y="231" width="38" height="14" rx="2" fill="#0d2a1e"/>
+  <circle cx="187" cy="238" r="2.4" fill="#3ddc97"/>
+  <rect x="193" y="236" width="20" height="3" rx="1.5" fill="#3ddc97" opacity="0.55"/>
+</svg>
