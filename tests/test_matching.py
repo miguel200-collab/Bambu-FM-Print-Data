@@ -60,6 +60,7 @@ def test_normalize_netid_matches_the_shared_fixture():
     """The same cases are asserted against the TypeScript twin in web/lib/labeling.test.ts."""
     import json
     from pathlib import Path
+
     from station.matching import normalize_netid
 
     cases = json.loads((Path(__file__).parent / "fixtures" / "netid_cases.json").read_text(encoding="utf-8"))["cases"]

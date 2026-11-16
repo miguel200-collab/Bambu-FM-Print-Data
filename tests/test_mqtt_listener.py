@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 import database as db
-from mqtt_listener import PrinterMonitor, PrintEndEvent
+from mqtt_listener import PrintEndEvent, PrinterMonitor
 
 
 class Msg:

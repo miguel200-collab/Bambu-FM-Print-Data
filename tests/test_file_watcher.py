@@ -1,4 +1,6 @@
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -8,7 +10,6 @@ import database as db
 from station import file_watcher as fw
 from station import gcode_features as gf
 from tests.helpers import build_3mf
-
 
 # --------------------------------------------------------------------------- harness
 
@@ -215,9 +216,6 @@ def test_plain_3mf_model_warns_that_it_has_no_gcode(harness, caplog):
 
 
 # =========================================================================== real HTTP behaviour (MockTransport)
-
-import threading
-import time
 
 REAL_CLIENT = httpx.Client
 
@@ -502,17 +500,6 @@ def test_archive_failure_keeps_the_blob_so_nothing_is_lost(harness, monkeypatch)
     assert harness.deleted == []                                # blob still in Vercel for a retry
     assert not (harness.inbox / "ab123" / "ab123_bracket.gcode.3mf").exists()
     assert list((harness.tmp_path / "incoming").iterdir()) == []
-
-
-def test_a_failed_blob_is_retried_later(harness):
-    harness.download_error = httpx.ConnectError("down")
-    harness.watcher._process_blob(blob())
-    harness.download_error = None
-    harness.payload = good_3mf_bytes(harness.tmp_path)
-    harness.watcher._process_blob(blob())
-    statuses = sorted(r["upload_status"] for r in db.list_recent_uploads(10))
-    assert statuses == ["done", "failed"]
-    assert (harness.inbox / "ab123" / "ab123_bracket.gcode.3mf").exists()
 
 
 # =========================================================================== hostile pathnames

@@ -47,10 +47,10 @@ def test_main_mock_runs_headless_and_exits_cleanly(tmp_path, sigint_at_start):
 
     try:
         deadline = time.time() + 20
-        while time.time() < deadline and not any("Print ended" in l for l in lines):
+        while time.time() < deadline and not any("Print ended" in line for line in lines):
             assert proc.poll() is None, "daemon exited early:\n" + "".join(lines)
             time.sleep(0.1)
-        assert any("Print ended" in l for l in lines), "no end-of-print event:\n" + "".join(lines)
+        assert any("Print ended" in line for line in lines), "no end-of-print event:\n" + "".join(lines)
     finally:
         proc.send_signal(signal.SIGINT)
         try:

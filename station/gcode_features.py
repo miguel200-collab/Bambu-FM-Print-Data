@@ -41,8 +41,9 @@ import re
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional, cast
 
 EXTRACTOR_VERSION = 1
 
@@ -218,7 +219,7 @@ def parse_header_lines(lines: Iterable[str]) -> dict[str, str]:
 # G-code scan (header + config + statistics) — single streaming pass
 # ---------------------------------------------------------------------------
 
-def _scan_gcode(stream, want_stats: bool) -> dict[str, Any]:
+def _scan_gcode(stream: Any, want_stats: bool) -> dict[str, Any]:
     header_lines: list[str] = []
     config: dict[str, str] = {}
     in_header = in_config = past_preamble = False
@@ -475,7 +476,7 @@ def extract_features(path: Path | str) -> dict[str, Any]:
                 scanned = _scan_gcode(fh, want_stats)
         except (zipfile.BadZipFile, OSError, EOFError, RuntimeError) as exc:
             raise FeatureError(f"could not read G-code: {exc}") from exc
-        config_source = "gcode"
+        config_source: str | None = "gcode"
         if not scanned["config"]:
             scanned["config"] = _config_from_project_settings(
                 _read_small(z, "Metadata/project_settings.config")
@@ -526,7 +527,7 @@ def extract_features(path: Path | str) -> dict[str, Any]:
     boxes = plate_json.get("bbox_objects") or []
     areas = [b.get("area") for b in boxes if isinstance(b, dict) and isinstance(b.get("area"), (int, float))]
     curated["object_count"] = len(object_names) or (len(boxes) or None)
-    curated["footprint_area_mm2"] = float(sum(areas)) if areas else None
+    curated["footprint_area_mm2"] = float(sum(cast(list[float], areas))) if areas else None
     bbox = plate_json.get("bbox_all")
     if isinstance(bbox, list) and len(bbox) == 4 and all(isinstance(v, (int, float)) for v in bbox):
         curated["bbox_x_mm"] = round(float(bbox[2]) - float(bbox[0]), 3)

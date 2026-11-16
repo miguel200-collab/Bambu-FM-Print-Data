@@ -37,7 +37,7 @@ import sqlite3
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 _REPO_DIR = Path(__file__).resolve().parent.parent
 _STAMP_FMT = "%Y-%m-%d_%H%M%S"
@@ -171,13 +171,13 @@ def backup(
     }
 
 
-def _load_backup_config() -> dict:
+def _load_backup_config() -> dict[str, Any]:
     cfg_path = _REPO_DIR / "config.json"
     if not cfg_path.exists():
         return {}
     try:
         with cfg_path.open(encoding="utf-8") as f:
-            return json.load(f)
+            return cast(dict[str, Any], json.load(f))
     except (OSError, json.JSONDecodeError):
         return {}
 

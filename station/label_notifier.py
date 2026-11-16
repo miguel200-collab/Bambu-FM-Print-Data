@@ -32,7 +32,8 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any, Optional
 
 import database as db
 from mqtt_listener import PrintEndEvent
@@ -57,7 +58,7 @@ SENT = "sent"
 FAILED = "failed"
 
 
-def _http_post(url: str, *, json: dict, headers: dict, timeout: float) -> int:
+def _http_post(url: str, *, json: dict[str, Any], headers: dict[str, Any], timeout: float) -> int:
     import httpx  # imported lazily: the disabled path must not need the network stack
 
     return httpx.post(url, json=json, headers=headers, timeout=timeout).status_code
@@ -81,7 +82,7 @@ class LabelNotifier:
         self._timeout = timeout
 
     @classmethod
-    def from_config(cls, full_config: dict[str, Any], **kwargs: Any) -> "LabelNotifier":
+    def from_config(cls, full_config: dict[str, Any], **kwargs: Any) -> LabelNotifier:
         labels = full_config.get("labels") or {}
         web = full_config.get("web") or {}
         return cls(

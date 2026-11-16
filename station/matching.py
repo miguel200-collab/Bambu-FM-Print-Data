@@ -26,8 +26,9 @@ Time windows (a job can only run a file that already exists):
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Mapping, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional
 
 # Longest extensions first so ".gcode.3mf" wins over ".3mf".
 _EXTENSIONS = (".gcode.3mf", ".3mf.gcode", ".3mf", ".gcode")

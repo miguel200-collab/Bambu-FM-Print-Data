@@ -108,7 +108,7 @@ def find_label_bursts(label_times: list[str]) -> dict[str, int]:
     stamps = sorted(t for t in (parse_ts(x) for x in label_times) if t is not None)
     bursts: list[int] = []
     run = 1
-    for prev, cur in zip(stamps, stamps[1:]):
+    for prev, cur in zip(stamps, stamps[1:]):  # noqa: B905
         if (cur - prev).total_seconds() <= BURST_GAP_S:
             run += 1
         else:

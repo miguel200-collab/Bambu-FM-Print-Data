@@ -174,6 +174,7 @@ def test_consent_gate_is_closed_until_implemented(tmp_db):
 def test_main_event_loop_runs_the_real_disabled_notifier(tmp_db, caplog):
     import queue
     import threading
+
     import main
 
     add_upload("u1", "ab123", "ab123_bracket.gcode.3mf")

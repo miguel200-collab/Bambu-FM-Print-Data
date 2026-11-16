@@ -11,8 +11,17 @@ import pytest
 import database as db
 
 
+@pytest.fixture(autouse=True)
+def isolate_dataset(tmp_path, monkeypatch):
+    """Point every test at a throw-away file, never the repo print_dataset.db."""
+    path = tmp_path / "isolated.db"
+    monkeypatch.setattr(db, "DB_PATH", path)
+    monkeypatch.setattr(db, "_current_era", 1)
+    return path
+
+
 @pytest.fixture
-def tmp_db(tmp_path, monkeypatch):
+def tmp_db(tmp_path, monkeypatch, isolate_dataset):
     """A freshly initialised, isolated database. Yields its path."""
     path = tmp_path / "test_dataset.db"
     monkeypatch.setattr(db, "DB_PATH", path)

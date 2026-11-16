@@ -42,8 +42,9 @@ Desktop.ini
 .vscode/
 .idea/
 
-# --- Internal state-tracking doc (not for the public repo) ---
-AGENTS.md
+# --- Type checker / linter caches ---
+.mypy_cache/
+.ruff_cache/
 
 # --- Generated artifacts (presentations, etc.) ---
 *.pptx

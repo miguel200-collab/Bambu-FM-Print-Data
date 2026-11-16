@@ -20,7 +20,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, cast
 
 import paho.mqtt.client as mqtt
 
@@ -312,10 +312,11 @@ class PrinterMonitor:
 
     def _on_print_end(self, final_state: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        log.info("[%s] Job ended: %s  state=%s  file=%s", self._name, self._current_job_id, final_state, self._subtask_name)
+        job_id = cast(str, self._current_job_id)
+        log.info("[%s] Job ended: %s  state=%s  file=%s", self._name, job_id, final_state, self._subtask_name)
 
         db.update_job_end(
-            job_id=self._current_job_id,
+            job_id=job_id,
             end_time=now,
             final_state=final_state,
             subtask_name=self._subtask_name,
@@ -327,7 +328,7 @@ class PrinterMonitor:
         )
 
         self._event_queue.put(PrintEndEvent(
-            job_id=self._current_job_id,
+            job_id=job_id,
             printer_name=self._name,
             subtask_name=self._subtask_name,
             final_state=final_state,

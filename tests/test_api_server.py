@@ -99,6 +99,20 @@ def test_blob_webhook_requires_key_and_enqueues():
     assert watcher.blobs == [{"pathname": body["pathname"], "url": "https://x/y", "downloadUrl": "https://x/z"}]
 
 
+def test_blob_webhook_rejects_malformed_body():
+    watcher = FakeWatcher()
+    c = make_client(watcher=watcher)
+    assert c.post("/api/blob-webhook", headers=KEY, json={}).status_code == 422
+    assert c.post("/api/blob-webhook", headers=KEY, json={"pathname": "incoming/a.gcode.3mf"}).status_code == 422
+    assert c.post("/api/blob-webhook", headers=KEY, json={"pathname": None, "url": "https://x"}).status_code == 422
+    assert c.post(
+        "/api/blob-webhook",
+        headers={**KEY, "content-type": "application/json"},
+        content=b"not-json",
+    ).status_code == 422
+    assert watcher.blobs == []
+
+
 def test_blob_webhook_503_without_watcher():
     c = make_client(watcher=None)
     r = c.post("/api/blob-webhook", json={"pathname": "p", "url": "u"}, headers=KEY)

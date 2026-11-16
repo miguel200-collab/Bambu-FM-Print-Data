@@ -1,0 +1,55 @@
+[tool.ruff]
+# Longest existing line is 124. Matching it avoids a repo-wide reflow.
+line-length = 124
+target-version = "py311"
+extend-exclude = ["web", ".venv", "venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# Mechanical annotation migrations. Left for a dedicated pass; see AGENTS.md.
+ignore = ["UP045", "UP017"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["main.py", "database.py", "mqtt_listener.py", "station", "analysis", "tests"]
+mypy_path = "."
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+ignore_missing_imports = true
+# Lenient baseline: untyped functions are allowed. Strict modules are listed below.
+check_untyped_defs = false
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+# `strict = true` in an override flips the global flags in mypy, so these
+# modules list the strict checks individually.
+[[tool.mypy.overrides]]
+module = [
+    "analysis.audit",
+    "analysis.backfill_features",
+    "analysis.backup_db",
+    "station.camera",
+    "station.families",
+    "station.gcode_features",
+    "station.label_notifier",
+    "station.matching",
+]
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+warn_return_any = true
+warn_unused_ignores = true
+implicit_reexport = false
+strict_equality = true
+extra_checks = true
