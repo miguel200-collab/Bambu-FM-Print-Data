@@ -25,10 +25,7 @@ export function PrinterCard({ printer, imageSrc }: Props) {
   return (
     <div className="card">
       <div className="card-head">
-        <div>
-          <div className="card-name">{printer.name}</div>
-          <div className="card-serial mono">{printer.serial}</div>
-        </div>
+        <div className="card-name">{printer.name}</div>
         <StatusBadge state={state} connected={printer.connected} />
       </div>
 
