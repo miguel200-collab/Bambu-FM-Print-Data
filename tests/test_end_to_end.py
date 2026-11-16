@@ -10,7 +10,6 @@ import json
 import queue
 import sqlite3
 import time
-from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient

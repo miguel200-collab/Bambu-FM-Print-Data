@@ -30,8 +30,9 @@ from __future__ import annotations
 
 import hmac
 import logging
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable, Literal, Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware

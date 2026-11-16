@@ -24,7 +24,7 @@ export default async function Page() {
         <div className="topbar-inner">
           <div className="brand">
             <span className="brand-mark" />
-            MAKERLAB <span className="brand-dim">// CORNELL TECH</span>
+            MAKERLAB <span className="brand-dim">{"// CORNELL TECH"}</span>
           </div>
           <nav className="nav">
             <a href="#printers" className="active">Printers</a>
@@ -41,15 +41,15 @@ export default async function Page() {
       <main className="page">
         <div className="subhead">
           <ConnectionPill initialPrinters={printers} />
-          <span className="sep">//</span>
+          <span className="sep">{"//"}</span>
           <span>Bambu Farm Manager</span>
-          <span className="sep">//</span>
+          <span className="sep">{"//"}</span>
           <span>Roosevelt Island, NYC</span>
         </div>
 
         <section className="hero">
           <h1 className="hero-title">
-            <span className="plus">+</span>PRINTERS <span className="dim">// FARM</span>
+            <span className="plus">+</span>PRINTERS <span className="dim">{"// FARM"}</span>
           </h1>
           <p className="hero-sub">
             Live status from the MakerLAB Bambu fleet. Submit a sliced print

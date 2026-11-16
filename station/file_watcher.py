@@ -47,9 +47,10 @@ import queue
 import threading
 import time
 import uuid
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Optional
 
 import httpx
 
@@ -125,7 +126,7 @@ class FileWatcher:
         self._inbox.mkdir(parents=True, exist_ok=True)
 
         # Webhook-driven queue: items are blob dicts with at least {pathname, url}.
-        self._queue: "queue.Queue[Optional[dict]]" = queue.Queue()
+        self._queue: queue.Queue[Optional[dict]] = queue.Queue()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 

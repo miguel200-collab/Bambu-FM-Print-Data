@@ -35,8 +35,9 @@ Everything here is pure (no I/O), so it is cheap to test thoroughly.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import Any, Optional, Sequence
+from typing import Any, Optional
 
 FAMILY_WINDOW = timedelta(days=14)
 GEOM_TOLERANCE = 0.05          # "about 5%" from the plan
@@ -56,8 +57,8 @@ def fingerprint(features: dict[str, Any]) -> dict[str, Any]:
     """The few numbers/names that identify a design, from extract_features()."""
     curated = features.get("curated") or {}
     names = sorted({n for n in (_norm_name(x) for x in features.get("object_names") or []) if n})
-    dims = [curated.get("bbox_x_mm"), curated.get("bbox_y_mm")]
-    dims = sorted(d for d in dims if isinstance(d, (int, float)))
+    raw_dims = [curated.get("bbox_x_mm"), curated.get("bbox_y_mm")]
+    dims = sorted(d for d in raw_dims if isinstance(d, (int, float)))
     return {
         "names": names,
         "area": curated.get("footprint_area_mm2"),
@@ -83,9 +84,12 @@ def geometry_distance(a: dict[str, Any], b: dict[str, Any]) -> Optional[float]:
     """
     diffs = [_rel(a.get("area"), b.get("area")), _rel(a.get("max_z"), b.get("max_z"))]
     if a.get("dims") and b.get("dims"):
-        diffs += [_rel(x, y) for x, y in zip(a["dims"], b["dims"])]
-    diffs = [d for d in diffs if d is not None]
-    return max(diffs) if diffs else None
+        diffs += [_rel(x, y) for x, y in zip(a["dims"], b["dims"])]  # noqa: B905
+    known: list[float] = []
+    for diff in diffs:
+        if diff is not None:
+            known.append(diff)
+    return max(known) if known else None
 
 
 def names_match(a: dict[str, Any], b: dict[str, Any]) -> bool:

@@ -22,16 +22,17 @@ it defaults to 1 so nothing is ever counted as "clean" by accident.
 """
 
 import json
-import sqlite3
 import logging
+import sqlite3
 import uuid
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from station import families
 from station.gcode_features import CURATED_COLUMNS, EXTRACTOR_VERSION
-from station.matching import JobMatch, parse_ts, pick_upload, is_calibration_job, normalize_netid
+from station.matching import JobMatch, is_calibration_job, normalize_netid, parse_ts, pick_upload
 
 log = logging.getLogger(__name__)
 
@@ -248,7 +249,7 @@ def update_job_end(
     job creation, ensuring the most-recent telemetry snapshot is stored.
     """
     # Build a dynamic SET clause so we only overwrite columns that have a value.
-    updates = {"end_time": end_time, "final_state": final_state}
+    updates: dict[str, Any] = {"end_time": end_time, "final_state": final_state}
     if subtask_name is not None:
         updates["subtask_name"] = subtask_name
     if gcode_file is not None:
@@ -416,7 +417,9 @@ def find_upload_for_job(
     """
     with _connect() as conn:
         uploads = _done_uploads(conn)
-    return pick_upload(subtask_name, parse_ts(start_time), uploads)
+    return pick_upload(
+        subtask_name, parse_ts(start_time), cast(Iterable[Mapping[str, Any]], uploads)
+    )
 
 
 def list_jobs_for_netid(
@@ -445,7 +448,11 @@ def list_jobs_for_netid(
             continue
         if is_calibration_job(job["subtask_name"]):
             continue
-        match = pick_upload(job["subtask_name"], parse_ts(job["start_time"]), uploads)
+        match = pick_upload(
+            job["subtask_name"],
+            parse_ts(job["start_time"]),
+            cast(Iterable[Mapping[str, Any]], uploads),
+        )
         if match.upload is None or normalize_netid(match.student_name) != key:
             continue
         out.append({

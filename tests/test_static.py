@@ -9,8 +9,8 @@ import ast
 from pathlib import Path
 
 import pytest
-from pyflakes.checker import Checker
 from pyflakes import messages
+from pyflakes.checker import Checker
 
 REPO = Path(__file__).resolve().parent.parent
 SKIP_DIRS = {".venv", "node_modules", "web", ".git", "__pycache__", ".pytest_cache"}

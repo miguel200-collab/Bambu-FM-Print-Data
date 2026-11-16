@@ -27,7 +27,7 @@ export default function LabelPage({
         <div className="topbar-inner">
           <div className="brand">
             <span className="brand-mark" />
-            MAKERLAB <span className="brand-dim">// CORNELL TECH</span>
+            MAKERLAB <span className="brand-dim">{"// CORNELL TECH"}</span>
           </div>
           <nav className="nav">
             <a href="/">Printers</a>
@@ -43,7 +43,7 @@ export default function LabelPage({
       <main className="page">
         <section className="hero">
           <h1 className="hero-title">
-            <span className="plus">+</span>LABEL <span className="dim">// MY PRINT</span>
+            <span className="plus">+</span>LABEL <span className="dim">{"// MY PRINT"}</span>
           </h1>
           <p className="hero-sub">
             Once your print is done, tell us how it turned out. Your answer is

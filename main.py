@@ -31,9 +31,10 @@ import threading
 import time
 import traceback
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 import database as db
 from mqtt_listener import PrintEndEvent, PrinterMonitor
@@ -221,6 +222,7 @@ def _start_station_services(
     api_port = int(web_cfg.get("api_port", 8080))
     try:
         import uvicorn
+
         from station.api_server import create_app
     except ImportError as exc:
         log.warning("Station API server unavailable (missing dependency): %s", exc)

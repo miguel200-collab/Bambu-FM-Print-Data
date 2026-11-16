@@ -2,10 +2,9 @@ import sqlite3
 
 import pytest
 
+import database as db
 from analysis import audit
 from tests.conftest import make_job
-
-import database as db
 
 
 def test_cohen_kappa_known_values():

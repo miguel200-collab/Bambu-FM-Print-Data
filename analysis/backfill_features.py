@@ -58,7 +58,7 @@ def backfill(inbox: Path) -> dict[str, Any]:
     db.init_db()  # applies additive migrations (new tables/columns) if needed
 
     # (student folder, file name) -> upload rows, oldest first
-    by_path: dict[tuple[str, str], list] = {}
+    by_path: dict[tuple[str, str], list[Any]] = {}
     for row in db.list_uploads_for_backfill():
         key = (sanitize_name(row["student_name"] or ""), row["renamed_filename"] or "")
         by_path.setdefault(key, []).append(row)
@@ -110,7 +110,7 @@ def backfill(inbox: Path) -> dict[str, Any]:
 
 def main(argv: Optional[list[str]] = None) -> int:
     repo = Path(__file__).resolve().parent.parent
-    cfg: dict = {}
+    cfg: dict[str, Any] = {}
     cfg_path = repo / "config.json"
     if cfg_path.exists():
         try:

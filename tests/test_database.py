@@ -1,7 +1,6 @@
 import sqlite3
 from datetime import datetime, timedelta, timezone
-
-import pytest
+from pathlib import Path
 
 import database as db
 from tests.conftest import make_job
@@ -19,6 +18,23 @@ def add_upload(upload_id, student, renamed, received=T0, status="done"):
 
 
 # --------------------------------------------------------------------------- schema
+
+def test_helpers_write_the_temp_database_only(tmp_db):
+    repo_db = Path(__file__).resolve().parents[1] / "print_dataset.db"
+    assert Path(db.DB_PATH).resolve() == Path(tmp_db).resolve()
+    assert Path(db.DB_PATH).resolve() != repo_db.resolve()
+    existed = repo_db.exists()
+    db.create_job(
+        job_id="iso",
+        printer_serial="S",
+        printer_ip="10.0.0.1",
+        start_time="2026-10-01T10:00:00+00:00",
+        subtask_name="part",
+    )
+    assert db.get_job("iso")["printer_serial"] == "S"
+    assert repo_db.exists() is existed
+    assert tmp_db.exists()
+
 
 def test_init_db_is_idempotent(tmp_db):
     db.init_db()
@@ -222,7 +238,8 @@ def test_list_jobs_for_netid_only_recent_ended_non_calibration(tmp_db):
     make_job("cal", "auto_hms_check_for_user.gcode", start=_iso(T0 + timedelta(hours=1)),
              end=_iso(T0 + timedelta(hours=2)))
 
-    ids = lambda now: sorted(j["job_id"] for j in db.list_jobs_for_netid("ab123", now=now))
+    def ids(now):
+        return sorted(j["job_id"] for j in db.list_jobs_for_netid("ab123", now=now))
     assert ids(NOW) == ["old", "recent"]
     # 20 days later the 14-day window has closed for both
     assert ids(T0 + timedelta(days=20)) == []
