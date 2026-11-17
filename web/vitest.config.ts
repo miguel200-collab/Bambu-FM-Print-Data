@@ -1,8 +1,11 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
-// Unit tests for the pure helpers and the API routes. No browser, no network.
 export default defineConfig({
+  // PrinterCard.tsx uses the automatic JSX runtime. tsconfig leaves jsx as
+  // "preserve" for Next, so vitest has to opt in or the render test cannot
+  // import the component.
+  esbuild: { jsx: "automatic" },
   resolve: {
     alias: { "@": fileURLToPath(new URL("./", import.meta.url)) },
   },
